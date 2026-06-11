@@ -22,17 +22,8 @@ phases:
   post_test:
     commands:
       - cd $DEVICEFARM_TEST_PACKAGE_PATH
-      - |
-        if [ -d "./allure-results" ]; then
-          cp -r ./allure-results $DEVICEFARM_LOG_DIR/allure-results
-          echo "allure-results copiado para $DEVICEFARM_LOG_DIR"
-        else
-          echo "Nenhum allure-results encontrado"
-        fi
-      - |
-        if [ -d "./ctrf" ]; then
-          cp -r ./ctrf $DEVICEFARM_LOG_DIR/ctrf
-        fi
+      - if [ -d "./allure-results" ]; then cp -r ./allure-results $DEVICEFARM_LOG_DIR/allure-results && echo "allure-results copiado"; else echo "Nenhum allure-results encontrado"; fi
+      - if [ -d "./ctrf" ]; then cp -r ./ctrf $DEVICEFARM_LOG_DIR/ctrf; fi
 
 artifacts:
   - $DEVICEFARM_LOG_DIR
