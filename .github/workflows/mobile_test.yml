@@ -191,22 +191,33 @@ jobs:
           echo "Artifacts baixados: $(ls artifacts/ | wc -l) arquivos"
           ls -la artifacts/
 
+      - name: Upload raw Device Farm artifacts (debug)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: devicefarm-raw-android-${{ github.run_number }}
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 30
+
       - name: Extract allure-results from artifacts
         if: always()
         run: |
-          # Procura por ZIPs que contenham allure-results
-          for f in artifacts/*.zip; do
+          # O Device Farm salva "Customer Artifacts" como zip SEM extensão e com o
+          # allure-results aninhado em Host_Machine_Files/$DEVICEFARM_LOG_DIR/allure-results/.
+          # Extrai qualquer arquivo que seja zip e procura allure-results em qualquer profundidade.
+          mkdir -p extracted
+          for f in artifacts/*; do
             [ -f "$f" ] || continue
-            if unzip -l "$f" 2>/dev/null | grep -q "allure-results"; then
-              echo "Extraindo allure-results de $f"
-              unzip -o "$f" "allure-results/*" -d . 2>/dev/null || true
+            if unzip -l "$f" >/dev/null 2>&1; then
+              unzip -o "$f" -d extracted >/dev/null 2>&1 || true
             fi
           done
-          # Cópia direta se existir como diretório
-          if [ -d "artifacts/allure-results" ]; then
-            cp -r artifacts/allure-results/* allure-results/ 2>/dev/null || true
-          fi
+          find extracted -type d -name allure-results | while read -r d; do
+            cp -r "$d/." allure-results/ 2>/dev/null || true
+          done
           echo "Arquivos em allure-results/: $(ls allure-results/ 2>/dev/null | wc -l)"
+          ls -la allure-results/ 2>/dev/null || true
 
       - name: Upload allure-results as artifact
         if: always()
@@ -214,6 +225,7 @@ jobs:
         with:
           name: allure-results-${{ github.run_number }}
           path: allure-results/
+          if-no-files-found: warn
           retention-days: 30
 
   # --- Job iOS Device Farm ---
@@ -397,19 +409,31 @@ jobs:
           done
           echo "Artifacts iOS baixados: $(ls artifacts/ | wc -l) arquivos"
 
+      - name: Upload raw iOS Device Farm artifacts (debug)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: devicefarm-raw-ios-${{ github.run_number }}
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 30
+
       - name: Extract allure-results from iOS artifacts
         if: always()
         run: |
-          for f in artifacts/*.zip; do
+          # "Customer Artifacts" é zip SEM extensão, com allure-results aninhado.
+          mkdir -p extracted
+          for f in artifacts/*; do
             [ -f "$f" ] || continue
-            if unzip -l "$f" 2>/dev/null | grep -q "allure-results"; then
-              unzip -o "$f" "allure-results/*" -d . 2>/dev/null || true
+            if unzip -l "$f" >/dev/null 2>&1; then
+              unzip -o "$f" -d extracted >/dev/null 2>&1 || true
             fi
           done
-          if [ -d "artifacts/allure-results" ]; then
-            cp -r artifacts/allure-results/* allure-results/ 2>/dev/null || true
-          fi
+          find extracted -type d -name allure-results | while read -r d; do
+            cp -r "$d/." allure-results/ 2>/dev/null || true
+          done
           echo "Arquivos em allure-results/ (iOS): $(ls allure-results/ 2>/dev/null | wc -l)"
+          ls -la allure-results/ 2>/dev/null || true
 
       - name: Upload iOS allure-results as artifact
         if: always()
@@ -417,6 +441,7 @@ jobs:
         with:
           name: allure-results-ios-${{ github.run_number }}
           path: allure-results/
+          if-no-files-found: warn
           retention-days: 30
 
   # --- Job de publicação do relatório ---
@@ -487,6 +512,21 @@ jobs:
           allure generate ./allure-results --clean -o ./allure-report
           echo "Relatório gerado"
 
+      - name: Generate Allure single-file report (baixável)
+        if: always()
+        run: |
+          allure generate ./allure-results --clean --single-file -o ./allure-single
+          echo "Single-file em ./allure-single/index.html"
+
+      - name: Upload Allure report (single-file) como artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-report-${{ github.run_number }}
+          path: allure-single/
+          if-no-files-found: warn
+          retention-days: 30
+
       - name: Copy report to reports branch
         run: |
           RUN_DIR="run-${{ github.run_number }}-$(date -u +%Y-%m-%d)"
@@ -510,12 +550,13 @@ jobs:
       - name: Print report URL
         run: |
           REPO="${{ github.repository }}"
-          OWNER=$(echo $REPO | cut -d'/' -f1)
+          OWNER=$(echo $REPO | cut -d'/' -f1 | tr '[:upper:]' '[:lower:]')
           REPO_NAME=$(echo $REPO | cut -d'/' -f2)
           RUN_DIR="run-${{ github.run_number }}-$(date -u +%Y-%m-%d)"
           echo ""
-          echo "Relatório publicado em:"
-          echo "https://${OWNER}.github.io/${REPO_NAME}/${RUN_DIR}/"
+          echo "1) Online (GitHub Pages):"
+          echo "   https://${OWNER}.github.io/${REPO_NAME}/${RUN_DIR}/"
+          echo "   Índice de todos os runs: https://${OWNER}.github.io/${REPO_NAME}/"
           echo ""
-          echo "Índice de todos os runs:"
-          echo "https://${OWNER}.github.io/${REPO_NAME}/"
+          echo "2) Download: aba Actions deste run -> artifact 'allure-report-${{ github.run_number }}'"
+          echo "   Baixe o ZIP, extraia e abra index.html (autocontido, sem servidor)."
