@@ -30,56 +30,14 @@ jobs:
           aws-region: us-west-2
 
       # --- Obter APK do EAS Build ---
-      - name: Install EAS CLI
-        run: npm install -g eas-cli
-
       - name: Download APK from latest EAS Build
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EXPO_PROJECT_ID: ${{ secrets.EXPO_PROJECT_ID }}
         run: |
-          BUILD_JSON=$(EXPO_TOKEN=${{ secrets.EXPO_TOKEN }} EXPO_PROJECT_ID=${{ secrets.EXPO_PROJECT_ID }} eas build:list \
-            --platform android \
-            --profile development \
-            --limit 1 \
-            --json \
-            --non-interactive)
-          APK_URL=$(echo "$BUILD_JSON" | jq -r '.[0].artifacts.buildUrl')
-          APP_VERSION=$(echo "$BUILD_JSON" | jq -r '.[0].appVersion // "?"')
-          APP_BUILD_VERSION=$(echo "$BUILD_JSON" | jq -r '.[0].appBuildVersion // "?"')
-          echo "APK URL: $APK_URL"
-          echo "Versão: $APP_VERSION (code $APP_BUILD_VERSION)"
-          if [ -z "$APK_URL" ] || [ "$APK_URL" = "null" ]; then
-            echo "Nenhum build EAS encontrado. Verifique o EXPO_TOKEN e o profile 'preview'."
-            exit 1
-          fi
-          echo "APP_VERSION=$APP_VERSION" >> $GITHUB_ENV
-          echo "APP_BUILD_VERSION=$APP_BUILD_VERSION" >> $GITHUB_ENV
-          if [[ "$APK_URL" == *.aab ]]; then
-            curl -L "$APK_URL" -o app.aab
-            echo "AAB detectado, convertendo para APK..."
-            JAR_URL=$(curl -s https://api.github.com/repos/google/bundletool/releases/latest \
-              | jq -r '.assets[] | select(.name | endswith(".jar")) | .browser_download_url' | head -1)
-            curl -L "$JAR_URL" -o scripts/bundletool.jar
-            mkdir -p ~/.android
-            if [ ! -f ~/.android/debug.keystore ]; then
-              keytool -genkey -v \
-                -keystore ~/.android/debug.keystore \
-                -storepass android -alias androiddebugkey \
-                -keypass android -keyalg RSA -keysize 2048 -validity 10000 \
-                -dname "CN=Android Debug,O=Android,C=US"
-            fi
-            java -jar scripts/bundletool.jar build-apks \
-              --bundle=app.aab --output=tmp-app.apks --mode=universal \
-              --ks=~/.android/debug.keystore \
-              --ks-pass=pass:android --ks-key-alias=androiddebugkey --key-pass=pass:android \
-              --overwrite
-            mkdir -p tmp-apks-dir
-            cd tmp-apks-dir && jar xf ../tmp-app.apks universal.apk && cd ..
-            mv tmp-apks-dir/universal.apk app.apk
-            rm -rf tmp-apks-dir tmp-app.apks app.aab
-            echo "APK convertido: $(du -sh app.apk | cut -f1)"
-          else
-            curl -L "$APK_URL" -o app.apk
-            echo "APK baixado: $(du -sh app.apk | cut -f1)"
-          fi
+          node scripts/install-apk.mjs --no-install
+          echo "APP_VERSION=$(jq -r '.appVersion' .build-info.json)" >> $GITHUB_ENV
+          echo "APP_BUILD_VERSION=$(jq -r '.appBuildVersion' .build-info.json)" >> $GITHUB_ENV
 
       # --- Upload APK para Device Farm ---
       - name: Create APK upload on Device Farm
@@ -281,30 +239,14 @@ jobs:
           aws-region: us-west-2
 
       # --- Obter IPA do EAS Build ---
-      - name: Install EAS CLI
-        run: npm install -g eas-cli
-
       - name: Download iOS build from latest EAS Build
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EXPO_PROJECT_ID: ${{ secrets.EXPO_PROJECT_ID }}
         run: |
-          BUILD_JSON=$(EXPO_TOKEN=${{ secrets.EXPO_TOKEN }} EXPO_PROJECT_ID=${{ secrets.EXPO_PROJECT_ID }} eas build:list \
-            --platform ios \
-            --profile development \
-            --limit 1 \
-            --json \
-            --non-interactive)
-          IOS_URL=$(echo "$BUILD_JSON" | jq -r '.[0].artifacts.buildUrl')
-          APP_VERSION=$(echo "$BUILD_JSON" | jq -r '.[0].appVersion // "?"')
-          APP_BUILD_VERSION=$(echo "$BUILD_JSON" | jq -r '.[0].appBuildVersion // "?"')
-          echo "iOS URL: $IOS_URL"
-          echo "Versão: $APP_VERSION (code $APP_BUILD_VERSION)"
-          if [ -z "$IOS_URL" ] || [ "$IOS_URL" = "null" ]; then
-            echo "Nenhum build iOS EAS encontrado. Verifique o EXPO_TOKEN e o profile 'development'."
-            exit 1
-          fi
-          echo "APP_VERSION=$APP_VERSION" >> $GITHUB_ENV
-          echo "APP_BUILD_VERSION=$APP_BUILD_VERSION" >> $GITHUB_ENV
-          curl -L "$IOS_URL" -o app.ipa
-          echo "iOS build baixado: $(du -sh app.ipa | cut -f1)"
+          node scripts/install-apk.mjs --no-install --platform ios
+          echo "APP_VERSION=$(jq -r '.appVersion' .build-info.json)" >> $GITHUB_ENV
+          echo "APP_BUILD_VERSION=$(jq -r '.appBuildVersion' .build-info.json)" >> $GITHUB_ENV
 
       # --- Upload IPA para Device Farm ---
       - name: Create IPA upload on Device Farm

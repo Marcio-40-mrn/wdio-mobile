@@ -6,10 +6,13 @@ import http from 'http';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { config } from 'dotenv';
-
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-config({ path: path.join(projectRoot, '.env') });
+try {
+    const { config } = await import('dotenv');
+    config({ path: path.join(projectRoot, '.env') });
+} catch {
+    // dotenv não disponível; usa process.env diretamente
+}
 
 const EXPO_TOKEN = process.env.EXPO_TOKEN;
 if (!EXPO_TOKEN) {
@@ -25,6 +28,11 @@ if (!EXPO_PROJECT_ID) {
 }
 
 const TARGET_BUNDLE_ID = 'com.aramis.ecomm';
+const noInstall = process.argv.includes('--no-install');
+const platformUpper = (() => {
+    const idx = process.argv.indexOf('--platform');
+    return idx !== -1 ? process.argv[idx + 1].toUpperCase() : 'ANDROID';
+})();
 
 function graphqlRequest(query, variables = {}) {
     return new Promise((resolve, reject) => {
@@ -132,7 +140,7 @@ const data = await graphqlRequest(`
 `, {
     [appIdArgName]: EXPO_PROJECT_ID,
     ...(hasLimit    ? { limit: 20 }          : {}),
-    ...(hasPlatform ? { platform: 'ANDROID' } : {}),
+    ...(hasPlatform ? { platform: platformUpper } : {}),
     ...(hasStatus   ? { status: 'FINISHED' }  : {}),
     ...(hasOffset   ? { offset: 0 }           : {}),
 });
@@ -146,7 +154,9 @@ const build = appBuilds
         b.status === 'FINISHED' &&
         b.buildProfile === 'development' &&
         b.appIdentifier === TARGET_BUNDLE_ID &&
-        (b.artifacts?.buildUrl?.endsWith('.apk') || b.artifacts?.buildUrl?.endsWith('.aab'))
+        (platformUpper === 'IOS'
+            ? b.artifacts?.buildUrl?.endsWith('.ipa')
+            : (b.artifacts?.buildUrl?.endsWith('.apk') || b.artifacts?.buildUrl?.endsWith('.aab')))
     );
 
 if (!build) {
@@ -181,8 +191,9 @@ writeFileSync(
     }, null, 2)
 );
 
+const isIpa = build.artifacts.buildUrl.endsWith('.ipa');
 const isAab = build.artifacts.buildUrl.endsWith('.aab');
-const tmpArtifact = path.join(projectRoot, isAab ? 'tmp-app.aab' : 'tmp-app.apk');
+const tmpArtifact = path.join(projectRoot, isIpa ? 'tmp-app.ipa' : (isAab ? 'tmp-app.aab' : 'tmp-app.apk'));
 
 function download(url, dest) {
     return new Promise((resolve, reject) => {
@@ -229,15 +240,21 @@ function httpsGet(url) {
     });
 }
 
-console.log(`Fazendo download do ${isAab ? 'AAB' : 'APK'}...`);
+console.log(`Fazendo download do ${isIpa ? 'IPA' : isAab ? 'AAB' : 'APK'}...`);
 await download(build.artifacts.buildUrl, tmpArtifact);
 
-if (!isAab) {
+if (isIpa) {
+    const appIpa = path.join(projectRoot, 'app.ipa');
+    renameSync(tmpArtifact, appIpa);
+    console.log('IPA salvo em: app.ipa');
+} else if (!isAab) {
     const appApk = path.join(projectRoot, 'app.apk');
     renameSync(tmpArtifact, appApk);
-    console.log('Instalando no emulador via adb...');
-    execSync(`adb install -r "${appApk}"`, { stdio: 'inherit' });
-    console.log('Instalação concluída. APK salvo em: app.apk');
+    if (!noInstall) {
+        console.log('Instalando no emulador via adb...');
+        execSync(`adb install -r "${appApk}"`, { stdio: 'inherit' });
+    }
+    console.log('APK salvo em: app.apk');
 } else {
     // AAB → APK universal via bundletool
     try {
@@ -315,9 +332,11 @@ if (!isAab) {
     const appApk = path.join(projectRoot, 'app.apk');
     renameSync(universalApk, appApk);
     rmSync(tmpApksDir, { recursive: true, force: true });
-    console.log('Instalando no emulador via adb...');
-    execSync(`adb install -r "${appApk}"`, { stdio: 'inherit' });
+    if (!noInstall) {
+        console.log('Instalando no emulador via adb...');
+        execSync(`adb install -r "${appApk}"`, { stdio: 'inherit' });
+    }
     unlinkSync(tmpArtifact);
     unlinkSync(tmpApks);
-    console.log('Instalação concluída. APK salvo em: app.apk');
+    console.log('APK salvo em: app.apk');
 }
