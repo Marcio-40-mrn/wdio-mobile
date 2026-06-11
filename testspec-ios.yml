@@ -2,17 +2,41 @@ version: 0.1
 phases:
   install:
     commands:
-      - echo "Device Farm managed Appium"
+      # O host iOS roda Node 14 por padrao, que quebra o WDIO 9. Seleciona Node 18 via nvm.
+      - export NVM_DIR=$HOME/.nvm
+      - '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"'
+      - nvm install 18 && nvm use 18
+      - node -v
 
   pre_test:
     commands:
+      - export NVM_DIR=$HOME/.nvm
+      - '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"'
+      - nvm use 18
       - cd $DEVICEFARM_TEST_PACKAGE_PATH
       - npm install
       - 'echo "CLIENT_USER=$CLIENT_USER" > .env'
       - 'echo "CLIENT_PASSWORD=$CLIENT_PASSWORD" >> .env'
+      # Ambiente customizado nao sobe o Appium sozinho: inicia em background com base path /wd/hub
+      - >-
+        appium --base-path=/wd/hub --log-timestamp --relaxed-security
+        >> $DEVICEFARM_LOG_DIR/appium.log 2>&1 &
+      # Aguarda o Appium ficar pronto
+      - |
+        t=0
+        while true; do
+          if [ $t -gt 60 ]; then echo "Appium nao iniciou em 60s"; exit 1; fi
+          if grep -iq "Appium REST http interface listener started" $DEVICEFARM_LOG_DIR/appium.log 2>/dev/null; then
+            echo "Appium pronto"; break
+          fi
+          echo "Aguardando Appium..."; sleep 1; t=$((t+1))
+        done
 
   test:
     commands:
+      - export NVM_DIR=$HOME/.nvm
+      - '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"'
+      - nvm use 18
       - cd $DEVICEFARM_TEST_PACKAGE_PATH
       - export PLATFORM=ios
       - 'npm run wdio || true'
