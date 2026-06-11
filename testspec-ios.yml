@@ -2,28 +2,26 @@ version: 0.1
 phases:
   install:
     commands:
-      - echo "Using Device Farm managed Appium"
+      - echo "Device Farm managed Appium"
 
   pre_test:
     commands:
-      - echo "Device: $DEVICEFARM_DEVICE_NAME | UDID: $DEVICEFARM_DEVICE_UDID"
-      - echo "App path: $DEVICEFARM_APP_PATH"
       - cd $DEVICEFARM_TEST_PACKAGE_PATH
       - npm install
-      - echo "CLIENT_USER=$CLIENT_USER" > .env
-      - echo "CLIENT_PASSWORD=$CLIENT_PASSWORD" >> .env
+      - 'echo "CLIENT_USER=$CLIENT_USER" > .env'
+      - 'echo "CLIENT_PASSWORD=$CLIENT_PASSWORD" >> .env'
 
   test:
     commands:
       - cd $DEVICEFARM_TEST_PACKAGE_PATH
       - export PLATFORM=ios
-      - npm run wdio || true
+      - 'npm run wdio || true'
 
   post_test:
     commands:
       - cd $DEVICEFARM_TEST_PACKAGE_PATH
-      - if [ -d "./allure-results" ]; then cp -r ./allure-results $DEVICEFARM_LOG_DIR/allure-results && echo "allure-results copiado"; else echo "Nenhum allure-results encontrado"; fi
-      - if [ -d "./ctrf" ]; then cp -r ./ctrf $DEVICEFARM_LOG_DIR/ctrf; fi
+      - 'cp -r ./allure-results $DEVICEFARM_LOG_DIR/allure-results 2>/dev/null || true'
+      - 'cp -r ./ctrf $DEVICEFARM_LOG_DIR/ctrf 2>/dev/null || true'
 
 artifacts:
   - $DEVICEFARM_LOG_DIR
