@@ -1,0 +1,579 @@
+name: Mobile Tests — AWS Device Farm
+
+on:
+  workflow_dispatch:
+  pull_request:
+
+env:
+  AWS_DEFAULT_REGION: us-west-2
+
+jobs:
+  run-on-device-farm:
+    runs-on: ubuntu-latest
+    outputs:
+      run_arn: ${{ steps.schedule.outputs.run_arn }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-west-2
+
+      # --- Obter APK do EAS Build ---
+      - name: Install EAS CLI
+        run: npm install -g eas-cli
+
+      - name: Download APK from latest EAS Build
+        run: |
+          BUILD_JSON=$(EXPO_TOKEN=${{ secrets.EXPO_TOKEN }} EXPO_PROJECT_ID=${{ secrets.EXPO_PROJECT_ID }} eas build:list \
+            --platform android \
+            --profile preview \
+            --limit 1 \
+            --json \
+            --non-interactive)
+          APK_URL=$(echo "$BUILD_JSON" | jq -r '.[0].artifacts.buildUrl')
+          APP_VERSION=$(echo "$BUILD_JSON" | jq -r '.[0].appVersion // "?"')
+          APP_BUILD_VERSION=$(echo "$BUILD_JSON" | jq -r '.[0].appBuildVersion // "?"')
+          echo "APK URL: $APK_URL"
+          echo "Versão: $APP_VERSION (code $APP_BUILD_VERSION)"
+          if [ -z "$APK_URL" ] || [ "$APK_URL" = "null" ]; then
+            echo "Nenhum build EAS encontrado. Verifique o EXPO_TOKEN e o profile 'preview'."
+            exit 1
+          fi
+          echo "APP_VERSION=$APP_VERSION" >> $GITHUB_ENV
+          echo "APP_BUILD_VERSION=$APP_BUILD_VERSION" >> $GITHUB_ENV
+          if [[ "$APK_URL" == *.aab ]]; then
+            curl -L "$APK_URL" -o app.aab
+            echo "AAB detectado, convertendo para APK..."
+            JAR_URL=$(curl -s https://api.github.com/repos/google/bundletool/releases/latest \
+              | jq -r '.assets[] | select(.name | endswith(".jar")) | .browser_download_url' | head -1)
+            curl -L "$JAR_URL" -o scripts/bundletool.jar
+            mkdir -p ~/.android
+            if [ ! -f ~/.android/debug.keystore ]; then
+              keytool -genkey -v \
+                -keystore ~/.android/debug.keystore \
+                -storepass android -alias androiddebugkey \
+                -keypass android -keyalg RSA -keysize 2048 -validity 10000 \
+                -dname "CN=Android Debug,O=Android,C=US"
+            fi
+            java -jar scripts/bundletool.jar build-apks \
+              --bundle=app.aab --output=tmp-app.apks --mode=universal \
+              --ks=~/.android/debug.keystore \
+              --ks-pass=pass:android --ks-key-alias=androiddebugkey --key-pass=pass:android \
+              --overwrite
+            mkdir -p tmp-apks-dir
+            cd tmp-apks-dir && jar xf ../tmp-app.apks universal.apk && cd ..
+            mv tmp-apks-dir/universal.apk app.apk
+            rm -rf tmp-apks-dir tmp-app.apks app.aab
+            echo "APK convertido: $(du -sh app.apk | cut -f1)"
+          else
+            curl -L "$APK_URL" -o app.apk
+            echo "APK baixado: $(du -sh app.apk | cut -f1)"
+          fi
+
+      # --- Upload APK para Device Farm ---
+      - name: Create APK upload on Device Farm
+        id: apk_upload
+        run: |
+          RESPONSE=$(aws devicefarm create-upload \
+            --project-arn "${{ secrets.DEVICE_FARM_PROJECT_ARN }}" \
+            --name "app-run${{ github.run_number }}.apk" \
+            --type ANDROID_APP \
+            --region us-west-2)
+          echo "apk_arn=$(echo $RESPONSE | jq -r '.upload.arn')" >> $GITHUB_OUTPUT
+          echo "apk_url=$(echo $RESPONSE | jq -r '.upload.url')" >> $GITHUB_OUTPUT
+
+      - name: Upload APK to Device Farm S3
+        run: curl -T app.apk "${{ steps.apk_upload.outputs.apk_url }}"
+
+      - name: Wait for APK upload to succeed
+        run: |
+          ARN="${{ steps.apk_upload.outputs.apk_arn }}"
+          for i in $(seq 1 20); do
+            STATUS=$(aws devicefarm get-upload --arn "$ARN" --region us-west-2 | jq -r '.upload.status')
+            echo "APK upload status ($i/20): $STATUS"
+            if [ "$STATUS" = "SUCCEEDED" ]; then exit 0; fi
+            if [ "$STATUS" = "FAILED" ]; then echo "APK upload falhou"; exit 1; fi
+            sleep 10
+          done
+          echo "Timeout aguardando upload do APK"; exit 1
+
+      # --- Criar ZIP do test package ---
+      - name: Create test package ZIP
+        run: |
+          zip -r test-package.zip . \
+            --exclude "node_modules/*" \
+            --exclude ".git/*" \
+            --exclude "allure-results/*" \
+            --exclude "allure-report/*" \
+            --exclude "ctrf/*" \
+            --exclude "_results_/*" \
+            --exclude "app.apk" \
+            --exclude "test-package.zip"
+          echo "ZIP criado: $(du -sh test-package.zip | cut -f1)"
+
+      - name: Create test package upload on Device Farm
+        id: test_upload
+        run: |
+          RESPONSE=$(aws devicefarm create-upload \
+            --project-arn "${{ secrets.DEVICE_FARM_PROJECT_ARN }}" \
+            --name "test-package-run${{ github.run_number }}.zip" \
+            --type APPIUM_NODE_TEST_PACKAGE \
+            --region us-west-2)
+          echo "test_arn=$(echo $RESPONSE | jq -r '.upload.arn')" >> $GITHUB_OUTPUT
+          echo "test_url=$(echo $RESPONSE | jq -r '.upload.url')" >> $GITHUB_OUTPUT
+
+      - name: Upload test package to Device Farm S3
+        run: curl -T test-package.zip "${{ steps.test_upload.outputs.test_url }}"
+
+      - name: Wait for test package upload to succeed
+        run: |
+          ARN="${{ steps.test_upload.outputs.test_arn }}"
+          for i in $(seq 1 30); do
+            STATUS=$(aws devicefarm get-upload --arn "$ARN" --region us-west-2 | jq -r '.upload.status')
+            echo "Test package upload status ($i/30): $STATUS"
+            if [ "$STATUS" = "SUCCEEDED" ]; then exit 0; fi
+            if [ "$STATUS" = "FAILED" ]; then echo "Test package upload falhou"; exit 1; fi
+            sleep 15
+          done
+          echo "Timeout aguardando upload do test package"; exit 1
+
+      # --- Upload testspec ---
+      - name: Create testspec upload on Device Farm
+        id: testspec_upload
+        run: |
+          RESPONSE=$(aws devicefarm create-upload \
+            --project-arn "${{ secrets.DEVICE_FARM_PROJECT_ARN }}" \
+            --name "testspec-run${{ github.run_number }}.yml" \
+            --type APPIUM_NODE_TEST_SPEC \
+            --region us-west-2)
+          echo "spec_arn=$(echo $RESPONSE | jq -r '.upload.arn')" >> $GITHUB_OUTPUT
+          echo "spec_url=$(echo $RESPONSE | jq -r '.upload.url')" >> $GITHUB_OUTPUT
+
+      - name: Upload testspec to Device Farm S3
+        run: curl -T testspec.yml "${{ steps.testspec_upload.outputs.spec_url }}"
+
+      - name: Wait for testspec upload to succeed
+        run: |
+          ARN="${{ steps.testspec_upload.outputs.spec_arn }}"
+          for i in $(seq 1 10); do
+            STATUS=$(aws devicefarm get-upload --arn "$ARN" --region us-west-2 | jq -r '.upload.status')
+            echo "Testspec upload status ($i/10): $STATUS"
+            if [ "$STATUS" = "SUCCEEDED" ]; then exit 0; fi
+            if [ "$STATUS" = "FAILED" ]; then echo "Testspec upload falhou"; exit 1; fi
+            sleep 5
+          done
+          echo "Timeout aguardando upload do testspec"; exit 1
+
+      # --- Agendar run no Device Farm ---
+      - name: Schedule Device Farm run
+        id: schedule
+        run: |
+          RUN_ARN=$(aws devicefarm schedule-run \
+            --project-arn "${{ secrets.DEVICE_FARM_PROJECT_ARN }}" \
+            --app-arn "${{ steps.apk_upload.outputs.apk_arn }}" \
+            --device-pool-arn "${{ secrets.DEVICE_FARM_DEVICE_POOL_ARN }}" \
+            --name "CI Run #${{ github.run_number }}" \
+            --test "{\"type\":\"APPIUM_NODE\",\"testPackageArn\":\"${{ steps.test_upload.outputs.test_arn }}\",\"testSpecArn\":\"${{ steps.testspec_upload.outputs.spec_arn }}\"}" \
+            --configuration "{\"environmentVariables\":[{\"key\":\"CLIENT_USER\",\"value\":\"${{ secrets.CLIENT_USER }}\"},{\"key\":\"CLIENT_PASSWORD\",\"value\":\"${{ secrets.CLIENT_PASSWORD }}\"},{\"key\":\"APP_VERSION\",\"value\":\"${{ env.APP_VERSION }}\"},{\"key\":\"APP_BUILD_VERSION\",\"value\":\"${{ env.APP_BUILD_VERSION }}\"}]}" \
+            --region us-west-2 \
+            --query 'run.arn' --output text)
+          echo "run_arn=$RUN_ARN" >> $GITHUB_OUTPUT
+          echo "Run agendado: $RUN_ARN"
+
+      # --- Aguardar conclusão ---
+      - name: Wait for Device Farm run to complete
+        run: |
+          ARN="${{ steps.schedule.outputs.run_arn }}"
+          echo "Aguardando run: $ARN"
+          for i in $(seq 1 120); do
+            RESULT=$(aws devicefarm get-run --arn "$ARN" --region us-west-2 | jq -r '.run | "\(.status) \(.result)"')
+            STATUS=$(echo $RESULT | cut -d' ' -f1)
+            RESULT_VAL=$(echo $RESULT | cut -d' ' -f2)
+            echo "Status ($i/120): $STATUS / $RESULT_VAL"
+            if [ "$STATUS" != "PENDING" ] && [ "$STATUS" != "RUNNING" ] && [ "$STATUS" != "SCHEDULING" ]; then
+              echo "Run concluído com resultado: $RESULT_VAL"
+              break
+            fi
+            sleep 60
+          done
+
+      # --- Download de artifacts ---
+      - name: Download artifacts from Device Farm
+        if: always()
+        run: |
+          RUN_ARN="${{ steps.schedule.outputs.run_arn }}"
+          mkdir -p artifacts allure-results
+
+          JOBS=$(aws devicefarm list-jobs --arn "$RUN_ARN" --region us-west-2 | jq -r '.jobs[].arn')
+
+          for JOB_ARN in $JOBS; do
+            SUITES=$(aws devicefarm list-suites --arn "$JOB_ARN" --region us-west-2 | jq -r '.suites[].arn')
+            for SUITE_ARN in $SUITES; do
+              while IFS=$'\t' read -r NAME URL; do
+                if [ -n "$URL" ] && [ "$URL" != "null" ]; then
+                  SAFE_NAME=$(echo "$NAME" | tr '/' '_')
+                  curl -sL "$URL" -o "artifacts/${SAFE_NAME}" 2>/dev/null || true
+                fi
+              done < <(aws devicefarm list-artifacts --arn "$SUITE_ARN" --type FILE --region us-west-2 \
+                | jq -r '.artifacts[] | [.name, .url] | @tsv')
+            done
+          done
+
+          echo "Artifacts baixados: $(ls artifacts/ | wc -l) arquivos"
+          ls -la artifacts/
+
+      - name: Extract allure-results from artifacts
+        if: always()
+        run: |
+          # Procura por ZIPs que contenham allure-results
+          for f in artifacts/*.zip; do
+            [ -f "$f" ] || continue
+            if unzip -l "$f" 2>/dev/null | grep -q "allure-results"; then
+              echo "Extraindo allure-results de $f"
+              unzip -o "$f" "allure-results/*" -d . 2>/dev/null || true
+            fi
+          done
+          # Cópia direta se existir como diretório
+          if [ -d "artifacts/allure-results" ]; then
+            cp -r artifacts/allure-results/* allure-results/ 2>/dev/null || true
+          fi
+          echo "Arquivos em allure-results/: $(ls allure-results/ 2>/dev/null | wc -l)"
+
+      - name: Upload allure-results as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-results-${{ github.run_number }}
+          path: allure-results/
+          retention-days: 30
+
+  # --- Job iOS Device Farm ---
+  run-ios-on-device-farm:
+    runs-on: ubuntu-latest
+    outputs:
+      run_arn: ${{ steps.schedule_ios.outputs.run_arn }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-west-2
+
+      # --- Obter IPA do EAS Build ---
+      - name: Install EAS CLI
+        run: npm install -g eas-cli
+
+      - name: Download iOS build from latest EAS Build
+        run: |
+          BUILD_JSON=$(EXPO_TOKEN=${{ secrets.EXPO_TOKEN }} EXPO_PROJECT_ID=${{ secrets.EXPO_PROJECT_ID }} eas build:list \
+            --platform ios \
+            --profile development \
+            --limit 1 \
+            --json \
+            --non-interactive)
+          IOS_URL=$(echo "$BUILD_JSON" | jq -r '.[0].artifacts.buildUrl')
+          APP_VERSION=$(echo "$BUILD_JSON" | jq -r '.[0].appVersion // "?"')
+          APP_BUILD_VERSION=$(echo "$BUILD_JSON" | jq -r '.[0].appBuildVersion // "?"')
+          echo "iOS URL: $IOS_URL"
+          echo "Versão: $APP_VERSION (code $APP_BUILD_VERSION)"
+          if [ -z "$IOS_URL" ] || [ "$IOS_URL" = "null" ]; then
+            echo "Nenhum build iOS EAS encontrado. Verifique o EXPO_TOKEN e o profile 'development'."
+            exit 1
+          fi
+          echo "APP_VERSION=$APP_VERSION" >> $GITHUB_ENV
+          echo "APP_BUILD_VERSION=$APP_BUILD_VERSION" >> $GITHUB_ENV
+          curl -L "$IOS_URL" -o app.ipa
+          echo "iOS build baixado: $(du -sh app.ipa | cut -f1)"
+
+      # --- Upload IPA para Device Farm ---
+      - name: Create IPA upload on Device Farm
+        id: ipa_upload
+        run: |
+          RESPONSE=$(aws devicefarm create-upload \
+            --project-arn "${{ secrets.DEVICE_FARM_PROJECT_ARN }}" \
+            --name "app-ios-run${{ github.run_number }}.ipa" \
+            --type IOS_APP \
+            --region us-west-2)
+          echo "ipa_arn=$(echo $RESPONSE | jq -r '.upload.arn')" >> $GITHUB_OUTPUT
+          echo "ipa_url=$(echo $RESPONSE | jq -r '.upload.url')" >> $GITHUB_OUTPUT
+
+      - name: Upload IPA to Device Farm S3
+        run: curl -T app.ipa "${{ steps.ipa_upload.outputs.ipa_url }}"
+
+      - name: Wait for IPA upload to succeed
+        run: |
+          ARN="${{ steps.ipa_upload.outputs.ipa_arn }}"
+          for i in $(seq 1 20); do
+            STATUS=$(aws devicefarm get-upload --arn "$ARN" --region us-west-2 | jq -r '.upload.status')
+            echo "IPA upload status ($i/20): $STATUS"
+            if [ "$STATUS" = "SUCCEEDED" ]; then exit 0; fi
+            if [ "$STATUS" = "FAILED" ]; then echo "IPA upload falhou"; exit 1; fi
+            sleep 10
+          done
+          echo "Timeout aguardando upload do IPA"; exit 1
+
+      # --- Criar ZIP do test package ---
+      - name: Create test package ZIP
+        run: |
+          zip -r test-package.zip . \
+            --exclude "node_modules/*" \
+            --exclude ".git/*" \
+            --exclude "allure-results/*" \
+            --exclude "allure-report/*" \
+            --exclude "ctrf/*" \
+            --exclude "_results_/*" \
+            --exclude "app.ipa" \
+            --exclude "test-package.zip"
+          echo "ZIP criado: $(du -sh test-package.zip | cut -f1)"
+
+      - name: Create test package upload on Device Farm
+        id: test_upload_ios
+        run: |
+          RESPONSE=$(aws devicefarm create-upload \
+            --project-arn "${{ secrets.DEVICE_FARM_PROJECT_ARN }}" \
+            --name "test-package-ios-run${{ github.run_number }}.zip" \
+            --type APPIUM_NODE_TEST_PACKAGE \
+            --region us-west-2)
+          echo "test_arn=$(echo $RESPONSE | jq -r '.upload.arn')" >> $GITHUB_OUTPUT
+          echo "test_url=$(echo $RESPONSE | jq -r '.upload.url')" >> $GITHUB_OUTPUT
+
+      - name: Upload test package to Device Farm S3
+        run: curl -T test-package.zip "${{ steps.test_upload_ios.outputs.test_url }}"
+
+      - name: Wait for test package upload to succeed
+        run: |
+          ARN="${{ steps.test_upload_ios.outputs.test_arn }}"
+          for i in $(seq 1 30); do
+            STATUS=$(aws devicefarm get-upload --arn "$ARN" --region us-west-2 | jq -r '.upload.status')
+            echo "Test package upload status ($i/30): $STATUS"
+            if [ "$STATUS" = "SUCCEEDED" ]; then exit 0; fi
+            if [ "$STATUS" = "FAILED" ]; then echo "Test package upload falhou"; exit 1; fi
+            sleep 15
+          done
+          echo "Timeout aguardando upload do test package"; exit 1
+
+      # --- Upload testspec ---
+      - name: Create testspec upload on Device Farm
+        id: testspec_upload_ios
+        run: |
+          RESPONSE=$(aws devicefarm create-upload \
+            --project-arn "${{ secrets.DEVICE_FARM_PROJECT_ARN }}" \
+            --name "testspec-ios-run${{ github.run_number }}.yml" \
+            --type APPIUM_NODE_TEST_SPEC \
+            --region us-west-2)
+          echo "spec_arn=$(echo $RESPONSE | jq -r '.upload.arn')" >> $GITHUB_OUTPUT
+          echo "spec_url=$(echo $RESPONSE | jq -r '.upload.url')" >> $GITHUB_OUTPUT
+
+      - name: Upload testspec to Device Farm S3
+        run: curl -T testspec-ios.yml "${{ steps.testspec_upload_ios.outputs.spec_url }}"
+
+      - name: Wait for testspec upload to succeed
+        run: |
+          ARN="${{ steps.testspec_upload_ios.outputs.spec_arn }}"
+          for i in $(seq 1 10); do
+            STATUS=$(aws devicefarm get-upload --arn "$ARN" --region us-west-2 | jq -r '.upload.status')
+            echo "Testspec upload status ($i/10): $STATUS"
+            if [ "$STATUS" = "SUCCEEDED" ]; then exit 0; fi
+            if [ "$STATUS" = "FAILED" ]; then echo "Testspec upload falhou"; exit 1; fi
+            sleep 5
+          done
+          echo "Timeout aguardando upload do testspec"; exit 1
+
+      # --- Agendar run iOS ---
+      - name: Schedule iOS Device Farm run
+        id: schedule_ios
+        run: |
+          RUN_ARN=$(aws devicefarm schedule-run \
+            --project-arn "${{ secrets.DEVICE_FARM_PROJECT_ARN }}" \
+            --app-arn "${{ steps.ipa_upload.outputs.ipa_arn }}" \
+            --device-pool-arn "${{ secrets.DEVICE_FARM_IOS_DEVICE_POOL_ARN }}" \
+            --name "CI iOS Run #${{ github.run_number }}" \
+            --test "{\"type\":\"APPIUM_NODE\",\"testPackageArn\":\"${{ steps.test_upload_ios.outputs.test_arn }}\",\"testSpecArn\":\"${{ steps.testspec_upload_ios.outputs.spec_arn }}\"}" \
+            --configuration "{\"environmentVariables\":[{\"key\":\"CLIENT_USER\",\"value\":\"${{ secrets.CLIENT_USER }}\"},{\"key\":\"CLIENT_PASSWORD\",\"value\":\"${{ secrets.CLIENT_PASSWORD }}\"},{\"key\":\"APP_VERSION\",\"value\":\"${{ env.APP_VERSION }}\"},{\"key\":\"APP_BUILD_VERSION\",\"value\":\"${{ env.APP_BUILD_VERSION }}\"}]}" \
+            --region us-west-2 \
+            --query 'run.arn' --output text)
+          echo "run_arn=$RUN_ARN" >> $GITHUB_OUTPUT
+          echo "Run iOS agendado: $RUN_ARN"
+
+      # --- Aguardar conclusão ---
+      - name: Wait for iOS Device Farm run to complete
+        run: |
+          ARN="${{ steps.schedule_ios.outputs.run_arn }}"
+          echo "Aguardando run iOS: $ARN"
+          for i in $(seq 1 120); do
+            RESULT=$(aws devicefarm get-run --arn "$ARN" --region us-west-2 | jq -r '.run | "\(.status) \(.result)"')
+            STATUS=$(echo $RESULT | cut -d' ' -f1)
+            RESULT_VAL=$(echo $RESULT | cut -d' ' -f2)
+            echo "Status ($i/120): $STATUS / $RESULT_VAL"
+            if [ "$STATUS" != "PENDING" ] && [ "$STATUS" != "RUNNING" ] && [ "$STATUS" != "SCHEDULING" ]; then
+              echo "Run iOS concluído com resultado: $RESULT_VAL"
+              break
+            fi
+            sleep 60
+          done
+
+      # --- Download de artifacts iOS ---
+      - name: Download artifacts from iOS Device Farm run
+        if: always()
+        run: |
+          RUN_ARN="${{ steps.schedule_ios.outputs.run_arn }}"
+          mkdir -p artifacts allure-results
+
+          JOBS=$(aws devicefarm list-jobs --arn "$RUN_ARN" --region us-west-2 | jq -r '.jobs[].arn')
+          for JOB_ARN in $JOBS; do
+            SUITES=$(aws devicefarm list-suites --arn "$JOB_ARN" --region us-west-2 | jq -r '.suites[].arn')
+            for SUITE_ARN in $SUITES; do
+              while IFS=$'\t' read -r NAME URL; do
+                if [ -n "$URL" ] && [ "$URL" != "null" ]; then
+                  SAFE_NAME=$(echo "$NAME" | tr '/' '_')
+                  curl -sL "$URL" -o "artifacts/${SAFE_NAME}" 2>/dev/null || true
+                fi
+              done < <(aws devicefarm list-artifacts --arn "$SUITE_ARN" --type FILE --region us-west-2 \
+                | jq -r '.artifacts[] | [.name, .url] | @tsv')
+            done
+          done
+          echo "Artifacts iOS baixados: $(ls artifacts/ | wc -l) arquivos"
+
+      - name: Extract allure-results from iOS artifacts
+        if: always()
+        run: |
+          for f in artifacts/*.zip; do
+            [ -f "$f" ] || continue
+            if unzip -l "$f" 2>/dev/null | grep -q "allure-results"; then
+              unzip -o "$f" "allure-results/*" -d . 2>/dev/null || true
+            fi
+          done
+          if [ -d "artifacts/allure-results" ]; then
+            cp -r artifacts/allure-results/* allure-results/ 2>/dev/null || true
+          fi
+          echo "Arquivos em allure-results/ (iOS): $(ls allure-results/ 2>/dev/null | wc -l)"
+
+      - name: Upload iOS allure-results as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-results-ios-${{ github.run_number }}
+          path: allure-results/
+          retention-days: 30
+
+  # --- Job de publicação do relatório ---
+  publish-report:
+    needs: [run-on-device-farm, run-ios-on-device-farm]
+    runs-on: ubuntu-latest
+    if: always()
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout main (para ter os scripts)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Install allure-commandline
+        run: npm install -g allure-commandline
+
+      - name: Download Android allure-results artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: allure-results-${{ github.run_number }}
+          path: allure-results/
+        continue-on-error: true
+
+      - name: Download iOS allure-results artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: allure-results-ios-${{ github.run_number }}
+          path: allure-results-ios/
+        continue-on-error: true
+
+      - name: Merge iOS allure-results
+        run: |
+          if [ -d "allure-results-ios" ] && [ "$(ls -A allure-results-ios 2>/dev/null)" ]; then
+            cp -r allure-results-ios/. allure-results/
+            echo "Resultados iOS mesclados em allure-results/"
+          else
+            echo "Nenhum resultado iOS para mesclar"
+          fi
+
+      - name: Checkout reports branch
+        uses: actions/checkout@v4
+        with:
+          ref: reports
+          path: reports-branch
+          fetch-depth: 0
+
+      - name: Copy Allure history for Trend tab
+        run: |
+          LATEST=$(ls reports-branch/ | grep "^run-" | sort -V | tail -1)
+          if [ -n "$LATEST" ] && [ -d "reports-branch/$LATEST/history" ]; then
+            mkdir -p allure-results/history
+            cp -r "reports-branch/$LATEST/history/." allure-results/history/
+            echo "Histórico copiado de: $LATEST"
+          else
+            echo "Nenhum histórico anterior encontrado (primeiro run)"
+          fi
+
+      - name: Generate Allure HTML report
+        run: |
+          allure generate ./allure-results --clean -o ./allure-report
+          echo "Relatório gerado"
+
+      - name: Copy report to reports branch
+        run: |
+          RUN_DIR="run-${{ github.run_number }}-$(date -u +%Y-%m-%d)"
+          mkdir -p "reports-branch/$RUN_DIR"
+          cp -r allure-report/. "reports-branch/$RUN_DIR/"
+          echo "Copiado para: reports-branch/$RUN_DIR"
+
+      - name: Generate reports index.html
+        run: node scripts/generate-report-index.mjs reports-branch
+
+      - name: Commit and push to reports branch
+        run: |
+          cd reports-branch
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --staged --quiet && echo "Nada para commitar" || \
+            git commit -m "Relatório: run-${{ github.run_number }}-$(date -u +%Y-%m-%d)"
+          git push origin reports
+
+      - name: Print report URL
+        run: |
+          REPO="${{ github.repository }}"
+          OWNER=$(echo $REPO | cut -d'/' -f1)
+          REPO_NAME=$(echo $REPO | cut -d'/' -f2)
+          RUN_DIR="run-${{ github.run_number }}-$(date -u +%Y-%m-%d)"
+          echo ""
+          echo "Relatório publicado em:"
+          echo "https://${OWNER}.github.io/${REPO_NAME}/${RUN_DIR}/"
+          echo ""
+          echo "Índice de todos os runs:"
+          echo "https://${OWNER}.github.io/${REPO_NAME}/"

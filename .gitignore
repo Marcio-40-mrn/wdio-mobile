@@ -1,0 +1,13 @@
+node_modules/
+/allure-report
+/allure-results
+/ctrf
+/_results_
+.env
+*.apk
+*.aab
+*.apks
+/tmp-apks-dir/
+/scripts/bundletool.jar
+/app.json
+/.build-info.json
