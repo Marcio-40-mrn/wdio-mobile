@@ -143,7 +143,7 @@ jobs:
             --device-pool-arn "${{ secrets.DEVICE_FARM_DEVICE_POOL_ARN }}" \
             --name "CI Run #${{ github.run_number }}" \
             --test "{\"type\":\"APPIUM_NODE\",\"testPackageArn\":\"${{ steps.test_upload.outputs.test_arn }}\",\"testSpecArn\":\"${{ steps.testspec_upload.outputs.spec_arn }}\"}" \
-            --configuration "{\"environmentVariables\":[{\"key\":\"CLIENT_USER\",\"value\":\"${{ secrets.CLIENT_USER }}\"},{\"key\":\"CLIENT_PASSWORD\",\"value\":\"${{ secrets.CLIENT_PASSWORD }}\"},{\"key\":\"APP_VERSION\",\"value\":\"${{ env.APP_VERSION }}\"},{\"key\":\"APP_BUILD_VERSION\",\"value\":\"${{ env.APP_BUILD_VERSION }}\"}]}" \
+            --configuration "{\"environmentVariables\":[{\"name\":\"CLIENT_USER\",\"value\":\"${{ secrets.CLIENT_USER }}\"},{\"name\":\"CLIENT_PASSWORD\",\"value\":\"${{ secrets.CLIENT_PASSWORD }}\"},{\"name\":\"APP_VERSION\",\"value\":\"${{ env.APP_VERSION }}\"},{\"name\":\"APP_BUILD_VERSION\",\"value\":\"${{ env.APP_BUILD_VERSION }}\"}]}" \
             --region us-west-2 \
             --query 'run.arn' --output text)
           echo "run_arn=$RUN_ARN" >> $GITHUB_OUTPUT
@@ -352,7 +352,7 @@ jobs:
             --device-pool-arn "${{ secrets.DEVICE_FARM_IOS_DEVICE_POOL_ARN }}" \
             --name "CI iOS Run #${{ github.run_number }}" \
             --test "{\"type\":\"APPIUM_NODE\",\"testPackageArn\":\"${{ steps.test_upload_ios.outputs.test_arn }}\",\"testSpecArn\":\"${{ steps.testspec_upload_ios.outputs.spec_arn }}\"}" \
-            --configuration "{\"environmentVariables\":[{\"key\":\"CLIENT_USER\",\"value\":\"${{ secrets.CLIENT_USER }}\"},{\"key\":\"CLIENT_PASSWORD\",\"value\":\"${{ secrets.CLIENT_PASSWORD }}\"},{\"key\":\"APP_VERSION\",\"value\":\"${{ env.APP_VERSION }}\"},{\"key\":\"APP_BUILD_VERSION\",\"value\":\"${{ env.APP_BUILD_VERSION }}\"}]}" \
+            --configuration "{\"environmentVariables\":[{\"name\":\"CLIENT_USER\",\"value\":\"${{ secrets.CLIENT_USER }}\"},{\"name\":\"CLIENT_PASSWORD\",\"value\":\"${{ secrets.CLIENT_PASSWORD }}\"},{\"name\":\"APP_VERSION\",\"value\":\"${{ env.APP_VERSION }}\"},{\"name\":\"APP_BUILD_VERSION\",\"value\":\"${{ env.APP_BUILD_VERSION }}\"}]}" \
             --region us-west-2 \
             --query 'run.arn' --output text)
           echo "run_arn=$RUN_ARN" >> $GITHUB_OUTPUT
