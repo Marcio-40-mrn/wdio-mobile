@@ -1,4 +1,4 @@
-# Aramis eComm — Mobile E2E Test Suite
+# Mobile E2E Test Suite
 
 WebdriverIO + Appium end-to-end test suite for the `com.aramis.ecomm` Android and iOS app.
 

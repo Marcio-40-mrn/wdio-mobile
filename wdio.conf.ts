@@ -33,6 +33,13 @@ function buildCapabilities(): object[] {
             "appium:noReset": false,
             "appium:bundleId": "com.aramis.ecomm",
             "appium:autoAcceptAlerts": true,
+            // Device Farm fornece um WDA pré-compilado e pré-assinado; reusar evita
+            // o build via xcodebuild (que falha com "code 70" no host self-managed).
+            "appium:usePrebuiltWDA": true,
+            "appium:derivedDataPath":
+                process.env.DEVICEFARM_WDA_DERIVED_DATA_PATH_V9 ??
+                process.env.DEVICEFARM_WDA_DERIVED_DATA_PATH,
+            "appium:showXcodeLog": true,
         } as any];
     }
 
