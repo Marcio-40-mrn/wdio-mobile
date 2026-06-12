@@ -171,7 +171,7 @@ trigger
 │   testspec-ios.yml: export PLATFORM=ios && npm run wdio  (isIOS=true → caps iOS)
 │
 └─ Job publish-report (aguarda ambos)
-    Mescla allure-results Android + iOS → gera HTML → publica no branch reports
+    Gera DOIS relatórios Allure separados (Android e iOS) → publica ambos no branch reports
 ```
 
 **Device Farm ARNs (GitHub Secrets):**
@@ -224,4 +224,4 @@ Node ESM script that generates `reports/index.html` listing all `run-N-DATE/` di
 
 ### Reports branch
 
-The `reports` branch is an orphan branch served by GitHub Pages. Each CI run creates `reports/run-{RUN_NUMBER}-{DATE}/` with the full Allure HTML report. Reports accumulate indefinitely — deletion is manual only. The index is at the root of the GitHub Pages URL.
+The `reports` branch is an orphan branch served by GitHub Pages. Each CI run creates `reports/run-{RUN_NUMBER}-{DATE}/` with **two** Allure HTML reports in subfolders: `android/` and `ios/`. Each platform keeps its own Trend history (copied per-platform from the previous run's matching subfolder). The root index (`scripts/generate-report-index.mjs`) lists each run with separate **Android** and **iOS** columns; runs published before the split have a single "legado" link. Reports accumulate indefinitely — deletion is manual only. The index is at the root of the GitHub Pages URL.

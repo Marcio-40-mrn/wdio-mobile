@@ -15,16 +15,34 @@ const entries = fs.readdirSync(absDir, { withFileTypes: true })
         const match = d.name.match(/^run-(\d+)-(.+)$/);
         const runNumber = match ? parseInt(match[1], 10) : 0;
         const date = match ? match[2] : d.name;
-        return { name: d.name, runNumber, date };
+        const hasAndroid = fs.existsSync(path.join(absDir, d.name, 'android', 'index.html'));
+        const hasIos = fs.existsSync(path.join(absDir, d.name, 'ios', 'index.html'));
+        const hasLegacy = fs.existsSync(path.join(absDir, d.name, 'index.html'));
+        return { name: d.name, runNumber, date, hasAndroid, hasIos, hasLegacy };
     })
     .sort((a, b) => b.runNumber - a.runNumber);
 
-const rows = entries.map(e => `
+const cell = (exists, href, label) =>
+    exists ? `<a href="${href}">${label}</a>` : '—';
+
+const rows = entries.map(e => {
+    // Runs antigos (pré-separação) têm o relatório na raiz do run, sem subpastas.
+    if (!e.hasAndroid && !e.hasIos && e.hasLegacy) {
+        return `
     <tr>
       <td>#${e.runNumber}</td>
       <td>${e.date}</td>
-      <td><a href="./${e.name}/index.html">Abrir Relatório</a></td>
-    </tr>`).join('\n');
+      <td colspan="2"><a href="./${e.name}/index.html">Abrir Relatório (legado)</a></td>
+    </tr>`;
+    }
+    return `
+    <tr>
+      <td>#${e.runNumber}</td>
+      <td>${e.date}</td>
+      <td>${cell(e.hasAndroid, `./${e.name}/android/index.html`, 'Abrir Android')}</td>
+      <td>${cell(e.hasIos, `./${e.name}/ios/index.html`, 'Abrir iOS')}</td>
+    </tr>`;
+}).join('\n');
 
 const html = `<!DOCTYPE html>
 <html lang="pt-BR">
@@ -55,7 +73,7 @@ const html = `<!DOCTYPE html>
     ? '<p class="empty">Nenhum relatório ainda. Execute o workflow para gerar o primeiro relatório.</p>'
     : `<table>
     <thead>
-      <tr><th>Run</th><th>Data</th><th>Relatório</th></tr>
+      <tr><th>Run</th><th>Data</th><th>Android</th><th>iOS</th></tr>
     </thead>
     <tbody>${rows}
     </tbody>
