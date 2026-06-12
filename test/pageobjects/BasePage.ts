@@ -123,7 +123,13 @@ export const scrollFinger = async () => {
     }
   ]);
 
-  await driver.releaseActions();
+  // releaseActions (DELETE /actions) não é suportado em alguns Appium (ex.: AWS Device Farm) e
+  // lança "unknown command". O gesto já foi aplicado pelo performActions; ignorar a falha aqui.
+  try {
+    await driver.releaseActions();
+  } catch {
+    // no-op: endpoint ausente nesse host
+  }
 };
 
 
