@@ -562,6 +562,17 @@ jobs:
       - name: Generate reports index.html
         run: node scripts/generate-report-index.mjs reports-branch
 
+      - name: Prune anexos > 95MB (limite GitHub 100MB)
+        run: |
+          BIG=$(find reports-branch -type f -size +95M)
+          if [ -n "$BIG" ]; then
+            echo "Removendo anexos > 95MB (excedem o limite do GitHub):"
+            echo "$BIG"
+            find reports-branch -type f -size +95M -delete
+          else
+            echo "Nenhum anexo > 95MB."
+          fi
+
       - name: Commit and push to reports branch
         run: |
           cd reports-branch

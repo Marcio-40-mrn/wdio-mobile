@@ -169,37 +169,39 @@ export const forceScrollBeforeSearching = async (scrolls: number = 6) => {
 
 export const timewhait = 3000;
 
-// APP IOS
-// await driver.action('pointer')
-//   .move({ duration: 0, x: 263, y: 510 })
-//   .down({ button: 0 })
-//   .pause(50)
-//   .up({ button: 0 })
-//   .perform();
-
-// const el1 = await driver.$("accessibility id:linear-gradient");
+// APP Android
+// const el1 = await driver.$("class name:android.view.View");
 // await el1.click();
-// const el2 = await driver.$("-ios class chain:**/XCUIElementTypeStaticText[`name == \"Você precisa aceitar os termos de política de privacidade para continuar.\"`][2]");
+// const el2 = await driver.$("id:com.android.permissioncontroller:id/permission_allow_foreground_only_button");
 // await el2.click();
-// const el3 = await driver.$("-ios class chain:**/XCUIElementTypeStaticText[`name == \"Você precisa aceitar os termos de política de privacidade para continuar.\"`][2]");
+// const el3 = await driver.$("id:com.android.permissioncontroller:id/permission_deny_button");
 // await el3.click();
-// const el4 = await driver.$("xpath:(//XCUIElementTypeOther[@name=\"Horizontal scroll bar, 1 page\"])[2]");
+// const el4 = await driver.$("accessibility id:Continue");
 // await el4.click();
-// const el5 = await driver.$("xpath:(//XCUIElementTypeOther[@name=\"Horizontal scroll bar, 1 page\"])[2]");
+// const el5 = await driver.$("id:com.android.permissioncontroller:id/permission_allow_button");
 // await el5.click();
-// const el6 = await driver.$("accessibility id:accept-button");
+// const el6 = await driver.$("accessibility id:I have read and agree");
 // await el6.click();
-// const el7 = await driver.$("accessibility id:tab-menu");
+// const el7 = await driver.$("accessibility id:I have read and agree");
 // await el7.click();
-// const el8 = await driver.$("accessibility id:Register or login");
+// const el8 = await driver.$("accessibility id:Menu");
 // await el8.click();
-// const el9 = await driver.$("accessibility id:Email");
-// await el9.addValue("marciorocha@maildrop.cc");
-// const el10 = await driver.$("accessibility id:Password *");
-// await el10.addValue("Maje1425");
-// const el16 = await driver.$("-ios class chain:**/XCUIElementTypeOther[`name == \"pressable\"`][1]");
+// const el9 = await driver.$("-android uiautomator:new UiSelector().text(\"login\")");
+// await el9.click();
+// const el10 = await driver.$("-android uiautomator:new UiSelector().className(\"android.view.ViewGroup\").instance(11)");
+// await el10.click();
+// const el11 = await driver.$("-android uiautomator:new UiSelector().text(\"Email\")");
+// await el11.addValue("marciorocha@maildrop.cc");
+// const el12 = await driver.$("-android uiautomator:new UiSelector().text(\"Password\")");
+// await el12.addValue("Maje1425");
+// const el13 = await driver.$("accessibility id:Sign in");
+// await el13.click();
+// const el14 = await driver.$("-android uiautomator:new UiSelector().text(\"Back\")");
+// await el14.click();
+// const el15 = await driver.$("accessibility id:Categorias");
+// await el15.click();
+// const el16 = await driver.$("accessibility id:Roupas");
 // await el16.click();
-// const el17 = await driver.$("-ios class chain:**/XCUIElementTypeOther[`name == \"pressable\"`][1]");
+// const el17 = await driver.$("-android uiautomator:new UiSelector().text(\"Camisas\")");
 // await el17.click();
-// const el18 = await driver.$("-ios class chain:**/XCUIElementTypeOther[`name == \"Forgot your password? Sign in Sign in with access code Not registered yet? Create Account\"`]/XCUIElementTypeOther[4]");
-// await el18.addValue("Maje1425");
+// await el17.click();
