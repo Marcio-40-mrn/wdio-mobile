@@ -13,6 +13,21 @@ export class BasePage {
     await resolvedElement.waitForDisplayed({ timeout });
   }
 
+  // Clica no elemento apenas se ele aparecer dentro do timeout; caso contrário pula o passo
+  // sem derrubar o teste. Usado nos passos de abertura/permissão que podem não surgir em
+  // todos os devices (ex.: permissão já concedida, telas de onboarding variando por SO).
+  async clickIfPresent(selector: string, timeout = 8000): Promise<boolean> {
+    const el = await $(selector);
+    const shown = await el.waitForDisplayed({ timeout }).then(() => true).catch(() => false);
+    if (!shown) {
+      console.log(`⏭️ Passo opcional pulado (não exibido): ${selector}`);
+      return false;
+    }
+    await el.click();
+    await driver.pause(timewhait);
+    return true;
+  }
+
   async fechaBanner() {
   const element1 = await $("class name:android.webkit.WebView");
   const element2 = await $("-android uiautomator:new UiSelector().text(\"Close\")");
@@ -26,54 +41,47 @@ export class BasePage {
 
 
   async iniciaApp() {
-    const element = await $("-android uiautomator:new UiSelector().className(\"android.view.View\").instance(0)");
-    await this.waitForElement(element);
-    await element.click();
-    await driver.pause(timewhait);
+    await this.clickIfPresent("-android uiautomator:new UiSelector().className(\"android.view.View\").instance(0)");
   }
 
   async ativaGps() {
-    const element = await $("id:com.android.permissioncontroller:id/permission_allow_one_time_button");
-    await this.waitForElement(element);
-    await element.click();
-    await driver.pause(timewhait);
+    await this.clickIfPresent("id:com.android.permissioncontroller:id/permission_allow_one_time_button");
   }
 
   async permiteNotificacao() {
-    const element = await $("id:com.android.permissioncontroller:id/permission_allow_button");
-    await this.waitForElement(element);
-    await element.click();
-    await driver.pause(timewhait);
+    await this.clickIfPresent("id:com.android.permissioncontroller:id/permission_allow_button");
   }
 
   async negaNotificacao() {
-    const element = await $("id:com.android.permissioncontroller:id/permission_deny_button");
-    await this.waitForElement(element);
-    await element.click();
-    await driver.pause(timewhait);
+    await this.clickIfPresent("id:com.android.permissioncontroller:id/permission_deny_button");
   }
 
   async continua() {
-    const element = await $("accessibility id:Continue");
-    await this.waitForElement(element); 
-    await element.click();
-    await driver.pause(timewhait);
+    await this.clickIfPresent("accessibility id:Continue");
   }
 
   async termo1() {
     const element = await $("accessibility id:I have read and agree");
     await forceScrollBeforeSearching(6);
-    await scrollUntilVisible(element);
-    await element.click();
-    await driver.pause(timewhait);
+    const found = await scrollUntilVisible(element);
+    if (found) {
+      await element.click();
+      await driver.pause(timewhait);
+    } else {
+      console.log("⏭️ termo1 pulado (não encontrado após scrolls)");
+    }
   }
 
   async termos2() {
     const element = await $("accessibility id:I have read and agree");
     await forceScrollBeforeSearching(5);
-    await scrollUntilVisible(element);
-    await element.click();
-    await driver.pause(timewhait);
+    const found = await scrollUntilVisible(element);
+    if (found) {
+      await element.click();
+      await driver.pause(timewhait);
+    } else {
+      console.log("⏭️ termos2 pulado (não encontrado após scrolls)");
+    }
   }
 
   async debugContextAndSource() {

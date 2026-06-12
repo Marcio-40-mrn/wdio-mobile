@@ -55,7 +55,8 @@ function buildCapabilities(): object[] {
             "appium:appActivity": "com.aramis.ecomm.MainActivity",
             "appium:uiautomator2ServerInstallTimeout": 60000,
             "appium:uiautomator2ServerLaunchTimeout": 60000,
-            "appium:autoGrantPermissions": true,
+            // Sem autoGrantPermissions: deixamos os diálogos de permissão (GPS/notificação)
+            // aparecerem para a sequência ativarApp() tratá-los, como no fluxo local.
             "appium:noIncrementalInstall": true,
         } as any];
     }
