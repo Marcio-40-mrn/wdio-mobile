@@ -39,7 +39,7 @@ phases:
       - nvm use 18
       - cd $DEVICEFARM_TEST_PACKAGE_PATH
       - export PLATFORM=ios
-      - 'npm run wdio || true'
+      - npm run wdio
 
   post_test:
     commands:

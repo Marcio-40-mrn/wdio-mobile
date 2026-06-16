@@ -154,6 +154,7 @@ jobs:
         run: |
           ARN="${{ steps.schedule.outputs.run_arn }}"
           echo "Aguardando run: $ARN"
+          RESULT_VAL=""
           for i in $(seq 1 120); do
             RESULT=$(aws devicefarm get-run --arn "$ARN" --region us-west-2 | jq -r '.run | "\(.status) \(.result)"')
             STATUS=$(echo $RESULT | cut -d' ' -f1)
@@ -165,6 +166,10 @@ jobs:
             fi
             sleep 60
           done
+          if [ "$RESULT_VAL" != "PASSED" ]; then
+            echo "::error::Device Farm run resultou em $RESULT_VAL"
+            exit 1
+          fi
 
       # --- Download de artifacts ---
       - name: Download artifacts from Device Farm
@@ -375,6 +380,7 @@ jobs:
         run: |
           ARN="${{ steps.schedule_ios.outputs.run_arn }}"
           echo "Aguardando run iOS: $ARN"
+          RESULT_VAL=""
           for i in $(seq 1 120); do
             RESULT=$(aws devicefarm get-run --arn "$ARN" --region us-west-2 | jq -r '.run | "\(.status) \(.result)"')
             STATUS=$(echo $RESULT | cut -d' ' -f1)
@@ -386,6 +392,10 @@ jobs:
             fi
             sleep 60
           done
+          if [ "$RESULT_VAL" != "PASSED" ]; then
+            echo "::error::Device Farm run iOS resultou em $RESULT_VAL"
+            exit 1
+          fi
 
       # --- Download de artifacts iOS ---
       - name: Download artifacts from iOS Device Farm run
