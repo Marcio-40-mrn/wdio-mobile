@@ -154,7 +154,9 @@ jobs:
         run: |
           ARN="${{ steps.schedule.outputs.run_arn }}"
           echo "Aguardando run: $ARN"
+          STATUS=""
           RESULT_VAL=""
+          REACHED_TERMINAL=false
           for i in $(seq 1 120); do
             RESULT=$(aws devicefarm get-run --arn "$ARN" --region us-west-2 | jq -r '.run | "\(.status) \(.result)"')
             STATUS=$(echo $RESULT | cut -d' ' -f1)
@@ -162,14 +164,19 @@ jobs:
             echo "Status ($i/120): $STATUS / $RESULT_VAL"
             if [ "$STATUS" != "PENDING" ] && [ "$STATUS" != "RUNNING" ] && [ "$STATUS" != "SCHEDULING" ]; then
               echo "Run concluído com resultado: $RESULT_VAL"
+              REACHED_TERMINAL=true
               break
             fi
             sleep 60
           done
-          if [ "$RESULT_VAL" != "PASSED" ]; then
-            echo "::error::Device Farm run resultou em $RESULT_VAL"
+          # Timeout sem estado terminal = falha real de automação (esteira travou) -> quebra.
+          if [ "$REACHED_TERMINAL" != "true" ]; then
+            echo "::error::Timeout aguardando o Device Farm (último status: $STATUS). A esteira não conseguiu obter o resultado."
             exit 1
           fi
+          # Resultado do teste (PASSED/FAILED/ERRORED/WARNED) NÃO quebra a esteira: reflete no relatório.
+          echo "::notice::Android Device Farm: $RESULT_VAL — ver relatório Allure"
+          echo "**Android Device Farm:** \`$RESULT_VAL\` — resultado reflete no relatório, não quebra a esteira." >> "$GITHUB_STEP_SUMMARY"
 
       # --- Download de artifacts ---
       - name: Download artifacts from Device Farm
@@ -380,7 +387,9 @@ jobs:
         run: |
           ARN="${{ steps.schedule_ios.outputs.run_arn }}"
           echo "Aguardando run iOS: $ARN"
+          STATUS=""
           RESULT_VAL=""
+          REACHED_TERMINAL=false
           for i in $(seq 1 120); do
             RESULT=$(aws devicefarm get-run --arn "$ARN" --region us-west-2 | jq -r '.run | "\(.status) \(.result)"')
             STATUS=$(echo $RESULT | cut -d' ' -f1)
@@ -388,14 +397,19 @@ jobs:
             echo "Status ($i/120): $STATUS / $RESULT_VAL"
             if [ "$STATUS" != "PENDING" ] && [ "$STATUS" != "RUNNING" ] && [ "$STATUS" != "SCHEDULING" ]; then
               echo "Run iOS concluído com resultado: $RESULT_VAL"
+              REACHED_TERMINAL=true
               break
             fi
             sleep 60
           done
-          if [ "$RESULT_VAL" != "PASSED" ]; then
-            echo "::error::Device Farm run iOS resultou em $RESULT_VAL"
+          # Timeout sem estado terminal = falha real de automação (esteira travou) -> quebra.
+          if [ "$REACHED_TERMINAL" != "true" ]; then
+            echo "::error::Timeout aguardando o Device Farm iOS (último status: $STATUS). A esteira não conseguiu obter o resultado."
             exit 1
           fi
+          # Resultado do teste (PASSED/FAILED/ERRORED/WARNED) NÃO quebra a esteira: reflete no relatório.
+          echo "::notice::iOS Device Farm: $RESULT_VAL — ver relatório Allure"
+          echo "**iOS Device Farm:** \`$RESULT_VAL\` — resultado reflete no relatório, não quebra a esteira." >> "$GITHUB_STEP_SUMMARY"
 
       # --- Download de artifacts iOS ---
       - name: Download artifacts from iOS Device Farm run
@@ -461,6 +475,10 @@ jobs:
     if: always()
     permissions:
       contents: write
+    # Serializa publicações de runs sobrepostas para evitar corrida de push na branch reports.
+    concurrency:
+      group: reports-publish
+      cancel-in-progress: false
 
     steps:
       - name: Checkout main (para ter os scripts)
@@ -495,7 +513,10 @@ jobs:
         with:
           ref: reports
           path: reports-branch
-          fetch-depth: 0
+          # fetch-depth: 1 — só a árvore do commit mais recente (já contém todos os run-N/).
+          # Evita baixar todo o histórico pesado da branch (relatórios + vídeos), que corrompia
+          # o checkout e causava "fatal: could not parse HEAD" no commit.
+          fetch-depth: 1
 
       - name: Copy Allure history per platform (Trend tab)
         run: |
@@ -556,42 +577,66 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-      - name: Copy reports to reports branch
+      - name: Publish reports to reports branch
+        if: always()
         run: |
           RUN_DIR="run-${{ github.run_number }}-$(date -u +%Y-%m-%d)"
-          for PLAT in android ios; do
-            if [ -d "allure-report-$PLAT" ]; then
-              mkdir -p "reports-branch/$RUN_DIR/$PLAT"
-              cp -r "allure-report-$PLAT/." "reports-branch/$RUN_DIR/$PLAT/"
-              echo "Copiado $PLAT para: reports-branch/$RUN_DIR/$PLAT"
-            else
-              echo "Sem relatório $PLAT para copiar"
-            fi
-          done
 
-      - name: Generate reports index.html
-        run: node scripts/generate-report-index.mjs reports-branch
-
-      - name: Prune anexos > 95MB (limite GitHub 100MB)
-        run: |
-          BIG=$(find reports-branch -type f -size +95M)
-          if [ -n "$BIG" ]; then
-            echo "Removendo anexos > 95MB (excedem o limite do GitHub):"
-            echo "$BIG"
-            find reports-branch -type f -size +95M -delete
-          else
-            echo "Nenhum anexo > 95MB."
+          # --- Guarda: nada gerado -> não publica, mas explica claramente o motivo ---
+          if [ ! -d "allure-report-android" ] && [ ! -d "allure-report-ios" ]; then
+            MSG="Device Farm não retornou allure-results (Android nem iOS) — relatório não publicado nesta run."
+            echo "::warning::$MSG"
+            echo "**Publicação:** $MSG" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
           fi
 
-      - name: Commit and push to reports branch
-        run: |
           cd reports-branch
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git diff --staged --quiet && echo "Nada para commitar" || \
-            git commit -m "Relatório: run-${{ github.run_number }}-$(date -u +%Y-%m-%d)"
-          git push origin reports
+
+          # (Re)aplica a contribuição desta run sobre a árvore ATUAL da branch reports.
+          # É idempotente: pode rodar de novo após re-sincronizar com o remoto.
+          apply_changes() {
+            for PLAT in android ios; do
+              if [ -d "../allure-report-$PLAT" ]; then
+                rm -rf "$RUN_DIR/$PLAT"
+                mkdir -p "$RUN_DIR/$PLAT"
+                cp -r "../allure-report-$PLAT/." "$RUN_DIR/$PLAT/"
+                echo "Copiado $PLAT para: $RUN_DIR/$PLAT"
+              else
+                echo "Sem relatório $PLAT para copiar"
+              fi
+            done
+            node ../scripts/generate-report-index.mjs .
+            # Remove anexos > 95MB (limite de 100MB por arquivo do GitHub)
+            find . -type f -size +95M -delete
+          }
+
+          n=0
+          while true; do
+            apply_changes
+            git add -A
+            if git diff --staged --quiet; then
+              echo "Nada novo para publicar."
+              echo "**Publicação:** nada novo para publicar nesta run." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            git commit -m "Relatório: $RUN_DIR"
+            if git push origin HEAD:reports; then
+              echo "Relatório publicado com sucesso."
+              echo "**Publicação:** relatório \`$RUN_DIR\` publicado na branch reports." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            n=$((n+1))
+            if [ "$n" -ge 5 ]; then
+              echo "::error::Falha ao publicar o relatório após 5 tentativas (push rejeitado pelo remoto)."
+              echo "**Publicação:** FALHOU após 5 tentativas de push na branch reports." >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            echo "Push rejeitado (corrida com outra run) — re-sincronizando com o remoto (tentativa $n/5)"
+            git fetch origin reports
+            git reset --hard FETCH_HEAD
+          done
 
       - name: Print report URL
         run: |
