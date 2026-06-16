@@ -31,6 +31,7 @@ describe('Teste Login e Perfil', () => {
         await step('homePage.abrirPerfil()', () => homePage.abrirPerfil());
 
         await step('loginPage.logar()', () => loginPage.logar(process.env.CLIENT_USER!, process.env.CLIENT_PASSWORD!));
+        await step('categoriaPage.voltar() - categoria', () => categoriaPage.voltar());
         await step('homePage.abrirCategorias()', () => homePage.abrirCategorias());
         await step('homePage.fechaBanner()', () => homePage.fechaBanner());
 
