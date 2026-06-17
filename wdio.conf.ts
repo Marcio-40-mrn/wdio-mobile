@@ -214,14 +214,27 @@ export const config: WebdriverIO.Config = {
 
     beforeTest: async function () {
         if (isRemote) return;
-        await driver.startRecordingScreen({ timeLimit: 180 });
+        if (isDeviceFarm && !isIOS) {
+            // SÓ Android no Device Farm: o screenrecord nativo (startRecordingScreen)
+            // trunca o vídeo em ~37s na troca de surface do app lá. MediaProjection
+            // sobrevive a isso e grava a sessão inteira em resolução nativa.
+            // Local e iOS continuam no startRecordingScreen (já gravam completo).
+            await driver.execute('mobile: startMediaProjectionRecording', {
+                maxDurationSec: 600,
+                priority: 'high',
+            });
+        } else {
+            await driver.startRecordingScreen({ timeLimit: 180 });
+        }
     },
 
     afterTest: async function (_test: any, _context: any, _result: any) {
 
         if (!isRemote) {
             try {
-                const video = await driver.stopRecordingScreen();
+                const video = (isDeviceFarm && !isIOS)
+                    ? (await driver.execute('mobile: stopMediaProjectionRecording')) as string
+                    : await driver.stopRecordingScreen();
                 const videoBuffer = Buffer.from(video, 'base64');
                 allure.startStep('Video da execução');
                 allure.addAttachment('Video', videoBuffer, 'video/mp4');

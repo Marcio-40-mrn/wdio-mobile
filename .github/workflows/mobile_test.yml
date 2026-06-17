@@ -608,8 +608,10 @@ jobs:
               fi
             done
             node ../scripts/generate-report-index.mjs .
-            # Remove anexos > 95MB (limite de 100MB por arquivo do GitHub)
-            find . -type f -size +95M -delete
+            # Remove anexos > 95MB (limite de 100MB por arquivo do GitHub).
+            # Exclui .git/ — caso contrário o packfile (>95MB com vídeos acumulados)
+            # é apagado e o git seguinte falha com "fatal: could not parse HEAD".
+            find . -path './.git' -prune -o -type f -size +95M -print0 | xargs -0 -r rm -f
           }
 
           n=0

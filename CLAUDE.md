@@ -97,8 +97,10 @@ Do not leave calls to this method in committed test code; it is a temporary debu
 
 - **`onPrepare`** hook in `wdio.conf.ts`: creates `allure-results/environment.properties` (includes `Environment=AWS Device Farm` or `Local`), `categories.json`, and `executor.json`
 - **`before`** hook: pauses 10 s after app launch to let it fully load
-- **`beforeTest`** hook: starts native screen recording via `driver.startRecordingScreen({ timeLimit: 180 })` — no ffmpeg required; capped at 180 s (3 min)
-- **`afterTest`** hook: stops recording, attaches video as `video/mp4` to Allure, then clears app data:
+- **`beforeTest`** hook: starts screen recording (no ffmpeg required), por cenário:
+  - **Android no Device Farm**: `driver.execute('mobile: startMediaProjectionRecording', { maxDurationSec: 600, priority: 'high' })` — MediaProjection grava a sessão inteira em resolução nativa. **Não** usar `startRecordingScreen` aqui: o `screenrecord` nativo truncava o vídeo em ~37 s na troca de surface do app no Device Farm.
+  - **Android local e iOS**: `driver.startRecordingScreen({ timeLimit: 180 })` (comportamento original — já grava completo)
+- **`afterTest`** hook: stops recording (`mobile: stopMediaProjectionRecording` no Android Device Farm / `stopRecordingScreen` nos demais), attaches video as `video/mp4` to Allure, then clears app data:
   - iOS (local ou Device Farm): `driver.execute('mobile: clearApp', { bundleId: 'com.aramis.ecomm' })`
   - Android Device Farm: `driver.execute('mobile: clearApp', { appId: 'com.aramis.ecomm' })`
   - Android local: `adb shell pm clear com.aramis.ecomm`
@@ -114,7 +116,7 @@ Three reporters run in parallel:
 2. **allure** — results in `./allure-results/`; generate HTML with `npm run report:allure`
 3. **ctrf-json** — machine-readable summary at `./ctrf/ctrf-report.json`
 
-Video is captured via Appium's native `startRecordingScreen`/`stopRecordingScreen` and attached directly to the Allure result — no external tool or ffmpeg needed.
+Video is captured via Appium and attached directly to the Allure result — no external tool or ffmpeg needed. Android no Device Farm usa MediaProjection (`mobile: startMediaProjectionRecording`/`stopMediaProjectionRecording`); local e iOS usam `startRecordingScreen`/`stopRecordingScreen`.
 
 ### Allure steps in test spec
 
