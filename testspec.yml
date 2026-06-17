@@ -2,7 +2,12 @@ version: 0.1
 phases:
   install:
     commands:
-      - echo "Device Farm managed Appium"
+      # Device Farm vem com Appium 1.x por padrão (não suporta mobile:
+      # startMediaProjectionRecording nem o releaseActions/DELETE do W3C usado nos
+      # scrolls). Selecionar Appium 2 via devicefarm-cli iguala ao motor local — já
+      # vem com o driver UiAutomator2 compatível pré-instalado.
+      - devicefarm-cli use appium 2
+      - appium --version
 
   pre_test:
     commands:

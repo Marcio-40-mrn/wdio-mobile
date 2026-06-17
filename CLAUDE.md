@@ -194,6 +194,10 @@ Ambos fazem:
 - `pre_test`: `npm install`, escreve `.env` a partir das env vars do Device Farm
 - `post_test`: copia `allure-results/` e `ctrf/` para `$DEVICEFARM_LOG_DIR`
 
+**Appium 2 no Android (`testspec.yml`):** a fase `install` roda `devicefarm-cli use appium 2`. Por padrão o Device Farm sobe **Appium 1.x**, que não tem `mobile: startMediaProjectionRecording` (vídeo Android cai no `catch` do `afterTest`) nem o `releaseActions`/`DELETE` do W3C usado pelos scrolls (`driver.performActions` → `NoSuchElementError` na maioria dos devices). O Appium 2 selecionado já vem com o driver UiAutomator2 compatível — não precisa adicionar `appium` ao `package.json`. **`testspec-ios.yml` continua no Appium 1.x** (host legado): migrar o iOS exigiria `ios_test_host: macos_sequoia` + `DEVICEFARM_APPIUM_WDA_DERIVED_DATA_PATH_V9`; fica para quando o fluxo de teste iOS for implementado.
+
+**Por que cada device mostra "3 testes" (Setup/Tests/Teardown Suite):** é a estrutura fixa que o Device Farm aplica a toda run — não vem da automação, não é configurável nem removível. Só a `Tests Suite` contém o teste real; o relatório Allure conta corretamente 1 teste.
+
 ### `scripts/install-apk.mjs`
 
 Node ESM script that fetches the latest `development` build (`.apk` or `.aab`) for `com.aramis.ecomm` from EAS via GraphQL API. Reads `EXPO_TOKEN` and `EXPO_PROJECT_ID` from `.env`. Used by `npm run install-apk` and `npm run wdio:fresh`.
@@ -227,3 +231,7 @@ Node ESM script that generates `reports/index.html` listing all `run-N-DATE/` di
 ### Reports branch
 
 The `reports` branch is an orphan branch served by GitHub Pages. Each CI run creates `reports/run-{RUN_NUMBER}-{DATE}/` with **two** Allure HTML reports in subfolders: `android/` and `ios/`. Each platform keeps its own Trend history (copied per-platform from the previous run's matching subfolder). The root index (`scripts/generate-report-index.mjs`) lists each run with separate **Android** and **iOS** columns; runs published before the split have a single "legado" link. Reports accumulate indefinitely — deletion is manual only. The index is at the root of the GitHub Pages URL.
+
+**Seleção de device no relatório:** o pool roda vários devices por plataforma, mas o relatório traz **apenas um** — o **primeiro device cujo job resultou `PASSED`** (garante que o vídeo é de um teste que passou). Se nenhum passou, cai no **primeiro device** como fallback. O passo "Download artifacts" de cada job baixa só o `Customer Artifacts` (zip com o `allure-results` daquele device, incluindo o vídeo) do device escolhido — antes baixava o zip de todos com o mesmo nome, sobrescrevendo até sobrar um aleatório.
+
+**Vídeo reproduzível (re-encode no `publish-report`):** antes do `allure generate`, o job re-encoda qualquer `.mp4` que não seja `h264` para H.264 + `+faststart` (mantendo o nome, para a referência no `*-result.json` seguir válida). O iOS (Appium 1.x) grava em MJPEG (`mp4v`), que o navegador não toca em `<video>`; o Android (MediaProjection sob Appium 2) já é h264 e é pulado.

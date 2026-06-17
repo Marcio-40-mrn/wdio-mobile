@@ -185,20 +185,31 @@ jobs:
           RUN_ARN="${{ steps.schedule.outputs.run_arn }}"
           mkdir -p artifacts allure-results
 
-          JOBS=$(aws devicefarm list-jobs --arn "$RUN_ARN" --region us-west-2 | jq -r '.jobs[].arn')
-
-          for JOB_ARN in $JOBS; do
-            SUITES=$(aws devicefarm list-suites --arn "$JOB_ARN" --region us-west-2 | jq -r '.suites[].arn')
-            for SUITE_ARN in $SUITES; do
-              while IFS=$'\t' read -r NAME URL; do
-                if [ -n "$URL" ] && [ "$URL" != "null" ]; then
-                  SAFE_NAME=$(echo "$NAME" | tr '/' '_')
-                  curl -sL "$URL" -o "artifacts/${SAFE_NAME}" 2>/dev/null || true
-                fi
-              done < <(aws devicefarm list-artifacts --arn "$SUITE_ARN" --type FILE --region us-west-2 \
-                | jq -r '.artifacts[] | [.name, .url] | @tsv')
-            done
+          # O relatório deve trazer apenas UM device: o primeiro que PASSOU (garante que o
+          # vídeo é de um teste que passou). Se nenhum passou, cai no primeiro device como
+          # fallback para o relatório não ficar vazio.
+          CHOSEN_JOB=""
+          FIRST_JOB=""
+          for JOB_ARN in $(aws devicefarm list-jobs --arn "$RUN_ARN" --region us-west-2 | jq -r '.jobs[].arn'); do
+            [ -z "$FIRST_JOB" ] && FIRST_JOB="$JOB_ARN"
+            RES=$(aws devicefarm get-job --arn "$JOB_ARN" --region us-west-2 | jq -r '.job.result')
+            NAME=$(aws devicefarm get-job --arn "$JOB_ARN" --region us-west-2 | jq -r '.job.device.name')
+            echo "Device: $NAME -> $RES"
+            if [ "$RES" = "PASSED" ] && [ -z "$CHOSEN_JOB" ]; then CHOSEN_JOB="$JOB_ARN"; fi
           done
+          [ -z "$CHOSEN_JOB" ] && CHOSEN_JOB="$FIRST_JOB"
+          echo "Device escolhido para o relatório: $CHOSEN_JOB"
+
+          # Baixa só o "Customer Artifacts" (zip com o allure-results, incl. vídeo) da
+          # Tests Suite do device escolhido.
+          SUITE_ARN=$(aws devicefarm list-suites --arn "$CHOSEN_JOB" --region us-west-2 \
+            | jq -r '.suites[] | select(.name=="Tests Suite") | .arn')
+          TEST_ARN=$(aws devicefarm list-tests --arn "$SUITE_ARN" --region us-west-2 | jq -r '.tests[0].arn')
+          URL=$(aws devicefarm list-artifacts --arn "$TEST_ARN" --type FILE --region us-west-2 \
+            | jq -r '.artifacts[] | select(.name=="Customer Artifacts") | .url')
+          if [ -n "$URL" ] && [ "$URL" != "null" ]; then
+            curl -sL --retry 3 --max-time 180 "$URL" -o "artifacts/customer-artifacts.zip" || true
+          fi
 
           echo "Artifacts baixados: $(ls artifacts/ | wc -l) arquivos"
           ls -la artifacts/
@@ -418,19 +429,30 @@ jobs:
           RUN_ARN="${{ steps.schedule_ios.outputs.run_arn }}"
           mkdir -p artifacts allure-results
 
-          JOBS=$(aws devicefarm list-jobs --arn "$RUN_ARN" --region us-west-2 | jq -r '.jobs[].arn')
-          for JOB_ARN in $JOBS; do
-            SUITES=$(aws devicefarm list-suites --arn "$JOB_ARN" --region us-west-2 | jq -r '.suites[].arn')
-            for SUITE_ARN in $SUITES; do
-              while IFS=$'\t' read -r NAME URL; do
-                if [ -n "$URL" ] && [ "$URL" != "null" ]; then
-                  SAFE_NAME=$(echo "$NAME" | tr '/' '_')
-                  curl -sL "$URL" -o "artifacts/${SAFE_NAME}" 2>/dev/null || true
-                fi
-              done < <(aws devicefarm list-artifacts --arn "$SUITE_ARN" --type FILE --region us-west-2 \
-                | jq -r '.artifacts[] | [.name, .url] | @tsv')
-            done
+          # Mesma regra do Android: primeiro device que PASSOU; senão, primeiro device.
+          # Obs.: enquanto o fluxo iOS (ativarApp/onboarding) não for implementado, nenhum
+          # device iOS passa, então cai sempre no fallback (vídeo de um device que falhou,
+          # porém reproduzível após o re-encode no job publish-report).
+          CHOSEN_JOB=""
+          FIRST_JOB=""
+          for JOB_ARN in $(aws devicefarm list-jobs --arn "$RUN_ARN" --region us-west-2 | jq -r '.jobs[].arn'); do
+            [ -z "$FIRST_JOB" ] && FIRST_JOB="$JOB_ARN"
+            RES=$(aws devicefarm get-job --arn "$JOB_ARN" --region us-west-2 | jq -r '.job.result')
+            NAME=$(aws devicefarm get-job --arn "$JOB_ARN" --region us-west-2 | jq -r '.job.device.name')
+            echo "Device: $NAME -> $RES"
+            if [ "$RES" = "PASSED" ] && [ -z "$CHOSEN_JOB" ]; then CHOSEN_JOB="$JOB_ARN"; fi
           done
+          [ -z "$CHOSEN_JOB" ] && CHOSEN_JOB="$FIRST_JOB"
+          echo "Device iOS escolhido para o relatório: $CHOSEN_JOB"
+
+          SUITE_ARN=$(aws devicefarm list-suites --arn "$CHOSEN_JOB" --region us-west-2 \
+            | jq -r '.suites[] | select(.name=="Tests Suite") | .arn')
+          TEST_ARN=$(aws devicefarm list-tests --arn "$SUITE_ARN" --region us-west-2 | jq -r '.tests[0].arn')
+          URL=$(aws devicefarm list-artifacts --arn "$TEST_ARN" --type FILE --region us-west-2 \
+            | jq -r '.artifacts[] | select(.name=="Customer Artifacts") | .url')
+          if [ -n "$URL" ] && [ "$URL" != "null" ]; then
+            curl -sL --retry 3 --max-time 180 "$URL" -o "artifacts/customer-artifacts.zip" || true
+          fi
           echo "Artifacts iOS baixados: $(ls artifacts/ | wc -l) arquivos"
 
       - name: Upload raw iOS Device Farm artifacts (debug)
@@ -532,6 +554,32 @@ jobs:
             else
               echo "Nenhum histórico $PLAT anterior encontrado"
             fi
+          done
+
+      - name: Re-encode vídeos para H.264 (player do navegador)
+        if: always()
+        continue-on-error: true
+        run: |
+          # O iOS (Appium 1.x) grava o vídeo em MJPEG (codec_tag mp4v), que o navegador não
+          # reproduz em <video> — o player aparece mas não roda. Re-encoda qualquer .mp4 que
+          # não seja h264 para H.264 + faststart, mantendo o mesmo nome (a referência no
+          # *-result.json continua válida). Android (MediaProjection) já é h264 -> pulado.
+          which ffmpeg >/dev/null 2>&1 || { sudo apt-get update -qq && sudo apt-get install -y ffmpeg; }
+          for PLAT in android ios; do
+            SRC="allure-results-$PLAT"
+            [ -d "$SRC" ] || continue
+            find "$SRC" -name "*.mp4" | while read -r f; do
+              codec=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 "$f" 2>/dev/null)
+              if [ "$codec" != "h264" ]; then
+                if ffmpeg -y -loglevel error -i "$f" -c:v libx264 -pix_fmt yuv420p -an -movflags +faststart "${f}.tmp.mp4"; then
+                  mv "${f}.tmp.mp4" "$f"
+                  echo "Re-encodado $f ($codec -> h264)"
+                else
+                  rm -f "${f}.tmp.mp4"
+                  echo "Falha ao re-encodar $f (codec $codec) — mantido original"
+                fi
+              fi
+            done
           done
 
       - name: Generate Allure HTML reports per platform
