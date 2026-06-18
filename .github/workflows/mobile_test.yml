@@ -560,24 +560,30 @@ jobs:
         if: always()
         continue-on-error: true
         run: |
-          # O iOS (Appium 1.x) grava o vídeo em MJPEG (codec_tag mp4v), que o navegador não
-          # reproduz em <video> — o player aparece mas não roda. Re-encoda qualquer .mp4 que
-          # não seja h264 para H.264 + faststart, mantendo o mesmo nome (a referência no
-          # *-result.json continua válida). Android (MediaProjection) já é h264 -> pulado.
+          # Normaliza TODOS os .mp4 (Android e iOS) para H.264 + faststart com bitrate
+          # limitado e downscale, mantendo o mesmo nome (a referência no *-result.json
+          # continua válida). Motivos:
+          #  - iOS (Appium 1.x): grava em MJPEG (codec_tag mp4v), que o navegador não toca
+          #    em <video> — precisa virar h264.
+          #  - Android (MediaProjection): já é h264, MAS em resolução alta passava de 100MB
+          #    (limite por arquivo do GitHub) e era apagado no publish -> vídeo 404 no
+          #    relatório. Re-encodar com -maxrate 2M + downscale garante <95MB.
+          # Por isso o re-encode agora é incondicional (antes pulava o que já era h264).
           which ffmpeg >/dev/null 2>&1 || { sudo apt-get update -qq && sudo apt-get install -y ffmpeg; }
           for PLAT in android ios; do
             SRC="allure-results-$PLAT"
             [ -d "$SRC" ] || continue
             find "$SRC" -name "*.mp4" | while read -r f; do
               codec=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 "$f" 2>/dev/null)
-              if [ "$codec" != "h264" ]; then
-                if ffmpeg -y -loglevel error -i "$f" -c:v libx264 -pix_fmt yuv420p -an -movflags +faststart "${f}.tmp.mp4"; then
-                  mv "${f}.tmp.mp4" "$f"
-                  echo "Re-encodado $f ($codec -> h264)"
-                else
-                  rm -f "${f}.tmp.mp4"
-                  echo "Falha ao re-encodar $f (codec $codec) — mantido original"
-                fi
+              if ffmpeg -y -loglevel error -i "$f" \
+                   -vf "scale=-2:'min(1280,ih)'" \
+                   -c:v libx264 -crf 28 -preset veryfast -maxrate 2M -bufsize 4M \
+                   -pix_fmt yuv420p -an -movflags +faststart "${f}.tmp.mp4"; then
+                mv "${f}.tmp.mp4" "$f"
+                echo "Re-encodado $f ($codec -> h264, <=720p/2Mbps)"
+              else
+                rm -f "${f}.tmp.mp4"
+                echo "Falha ao re-encodar $f (codec $codec) — mantido original"
               fi
             done
           done

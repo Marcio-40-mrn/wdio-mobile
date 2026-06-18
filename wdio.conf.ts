@@ -217,9 +217,16 @@ export const config: WebdriverIO.Config = {
         if (isDeviceFarm && !isIOS) {
             // SÓ Android no Device Farm: o screenrecord nativo (startRecordingScreen)
             // trunca o vídeo em ~37s na troca de surface do app lá. MediaProjection
-            // sobrevive a isso e grava a sessão inteira em resolução nativa.
+            // sobrevive a isso e grava a sessão inteira.
             // Local e iOS continuam no startRecordingScreen (já gravam completo).
+            //
+            // resolution: '1280x720' (720p) — em resolução nativa o .mp4 passava de
+            // 100MB (limite por arquivo do GitHub), era apagado no publish e o vídeo
+            // sumia do relatório (404). 720p reduz drásticamente o tamanho sem perder
+            // a legibilidade do fluxo. priority é prioridade da thread de captura
+            // (não mexe na qualidade/tamanho) — mantido em 'high' para não perder frames.
             await driver.execute('mobile: startMediaProjectionRecording', {
+                resolution: '1280x720',
                 maxDurationSec: 600,
                 priority: 'high',
             });
