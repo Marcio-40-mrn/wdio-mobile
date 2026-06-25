@@ -1,4 +1,4 @@
-import { BasePage, timewhait, scrollUntilVisible } from "./BasePage";
+import { BasePage, timewhait } from "./BasePage";
 import { driver, $ } from '@wdio/globals'
 
 export class CategoriasPage extends BasePage {
@@ -29,17 +29,14 @@ export class CategoriasPage extends BasePage {
 
     async selecionarProduto(texto: string) {
         const element = await $(`-android uiautomator:new UiSelector().text(\"${texto}\")`);
-        // Rola até o produto aparecer: a vitrine é uma lista rolável e o item nem sempre
-        // renderiza no viewport inicial. waitForElement sozinho não rolava e estourava 20s.
-        const found = await scrollUntilVisible(element);
-        if (!found) throw new Error(`Produto não encontrado após scroll: ${texto}`);
+        await this.waitForElement(element);
+        await element.scrollIntoView();
         await element.click();
         await driver.pause(timewhait);
     }
 
     async validaElememnto(texto: string) {
         const element = await $(`-android uiautomator:new UiSelector().text(\"${texto}\")`);
-        await scrollUntilVisible(element);
         await this.elementVisible(element);
     }
 

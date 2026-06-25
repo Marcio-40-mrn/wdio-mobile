@@ -36,7 +36,6 @@ describe('Teste Login e Perfil', () => {
         await step('homePage.fechaBanner()', () => homePage.fechaBanner());
 
         await step('categoriaPage.clickRoupas()', () => categoriaPage.clickRoupas());
-        await step('homePage.fechaBanner()', () => homePage.fechaBanner());
         await step('categoriaPage.abrirCamisetas()', () => categoriaPage.abrirCamisetas());
         await step('categoriaPage.selecionarProduto()', () => categoriaPage.selecionarProduto("Camisa Manga Longa Slim Poliviscose de Bambu Stretch Branco"));
         await step('categoriaPage.adicionarItemFavoritos()', () => categoriaPage.adicionarItemFavoritos());
