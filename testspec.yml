@@ -15,6 +15,7 @@ phases:
       - npm install
       - 'echo "CLIENT_USER=$CLIENT_USER" > .env'
       - 'echo "CLIENT_PASSWORD=$CLIENT_PASSWORD" >> .env'
+      - 'echo "CLIENT_USERS_B64=$CLIENT_USERS_B64" >> .env'
       # Ambiente customizado nao sobe o Appium sozinho: inicia em background com base path /wd/hub
       - >-
         appium --base-path=/wd/hub --log-timestamp --relaxed-security

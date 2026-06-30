@@ -3,6 +3,7 @@ import { LoginPage } from "../pageobjects/LoginPage";
 import { CategoriasPage } from "../pageobjects/CategoriasPage";
 import { PerfilPage } from "../pageobjects/PerfilPage";
 import { FavoritosPage } from "../pageobjects/FavoritosPage";
+import { getCredentials } from "../utils/credentials";
 import allure from '@wdio/allure-reporter';
 import { Status } from 'allure-js-commons';
 
@@ -27,10 +28,13 @@ describe('Teste Login e Perfil', () => {
         const perfilPage = new PerfilPage();
         const favoritosPage = new FavoritosPage();
 
+        const { user, password } = getCredentials();
+
         await step('homePage.ativarApp()', () => homePage.ativarApp());
         await step('homePage.abrirPerfil()', () => homePage.abrirPerfil());
 
-        await step('loginPage.logar()', () => loginPage.logar(process.env.CLIENT_USER!, process.env.CLIENT_PASSWORD!));
+        await step('loginPage.logar()', () => loginPage.logar(user, password));
+        await step('homePage.fechaBanner()', () => homePage.fechaBanner());
         // await step('categoriaPage.voltar() - categoria', () => categoriaPage.voltar());
         await step('homePage.abrirCategorias()', () => homePage.abrirCategorias());
         await step('homePage.fechaBanner()', () => homePage.fechaBanner());
