@@ -19,7 +19,7 @@ export class CategoriasPage extends BasePage {
         await driver.pause(timewhait);
     }
 
-    async abrirCamisetas() {
+    async abrirCamisas() {
         const element = await $("accessibility id:Camisas");
         await this.waitForElement(element);
         await element.scrollIntoView();

@@ -29,14 +29,29 @@ export class BasePage {
   }
 
   async fechaBanner() {
-  const element1 = await $("class name:android.webkit.WebView");
-  const element2 = await $("-android uiautomator:new UiSelector().text(\"Close\")");
+  // Banner do Insider: a WebView (htmlView) não é debuggable e o botão nativo closeBt está
+  // DESALINHADO do "X" real (renderizado dentro da WebView, ~1 largura do closeBt à esquerda).
+  // Clicar no closeBt cai na WebView e ABRE o promo. Fechamos tocando na coordenada do "X",
+  // derivada dos bounds do closeBt (escala por device, pois o Appium lê os bounds reais).
+  const closeBt = await $("id:com.aramis.ecomm:id/closeBt");
+  if (!(await closeBt.isDisplayed().catch(() => false))) return;
 
-  if (await element2.isDisplayed().catch(() => false)) {
-    await element1.click();
-    await element2.click();
-    await driver.pause(timewhait);
-  }
+  const { x, y } = await closeBt.getLocation();
+  const { width, height } = await closeBt.getSize();
+  const tapX = Math.round(x - width);        // closeBt.left − largura → cai no "X"
+  const tapY = Math.round(y + height / 2);   // centro vertical do closeBt
+
+  await driver.performActions([{
+    type: 'pointer', id: 'finger1', parameters: { pointerType: 'touch' },
+    actions: [
+      { type: 'pointerMove', duration: 0, x: tapX, y: tapY },
+      { type: 'pointerDown', button: 0 },
+      { type: 'pointerUp', button: 0 },
+    ],
+  }]);
+  try { await driver.releaseActions(); } catch {}
+
+  await driver.pause(timewhait);
 }
 
 
