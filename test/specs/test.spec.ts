@@ -5,7 +5,7 @@ import { PerfilPage } from "../pageobjects/PerfilPage";
 import { FavoritosPage } from "../pageobjects/FavoritosPage";
 import { getCredentials } from "../utils/credentials";
 import { friendlyDeviceName } from "../utils/device-name";
-import allure from '@wdio/allure-reporter';
+import allure, { addHistoryId, addTestCaseId } from '@wdio/allure-reporter';
 import { Status } from 'allure-js-commons';
 
 // npx wdio run ./wdio.conf.js --spec ./test/specs/test.spec.ts
@@ -34,8 +34,16 @@ describe('Teste Login e Perfil', () => {
         // Rotula a execução por aparelho para o relatório Allure juntar TODOS os devices
         // num só e permitir navegar por aparelho (aba Suites) mostrando a conta usada.
         const device = friendlyDeviceName();
+        // historyId/testCaseId DISTINTO por aparelho: o Allure agrupa resultados pelo historyId;
+        // sem isso os N devices (mesmo título de teste) colapsam num só, aparecendo como "retries"
+        // e mostrando apenas um device. Chave estável por modelo → cada aparelho mantém seu
+        // histórico (aba Trend) entre runs. (addArgument NÃO altera o historyId nesta versão.)
+        const caseKey = `adiciona-favoritos::${device}`;
+        await addTestCaseId(caseKey);
+        await addHistoryId(caseKey);
+
         await allure.addParentSuite(`${device} — ${user}`); // nó do aparelho na aba Suites (com a conta)
-        await allure.addArgument('Device', device);          // param visível + separa o historyId por device
+        await allure.addArgument('Device', device);          // device visível nos parâmetros do teste
         await allure.addArgument('Conta', user);             // qual conta rodou neste device
         await allure.addLabel('host', device);               // aba Timeline agrupa por aparelho
 
