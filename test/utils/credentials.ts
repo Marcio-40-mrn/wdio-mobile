@@ -14,6 +14,11 @@ export interface Credentials {
 // mapeia cada device a um índice único nessa lista, garantindo uma conta distinta
 // por device.
 //
+// A identidade do device é o MODELO (ro.product.model), lido das capabilities da
+// sessão (`browser.capabilities.deviceModel`). NÃO usar DEVICEFARM_DEVICE_NAME:
+// essa env var é o número de SÉRIE do aparelho (no iOS, o UDID) e muda a cada run,
+// então nunca casaria com um mapa fixo — todos os devices cairiam no conta[0].
+//
 // Por que CSV de emails (e não base64 de JSON): o Device Farm limita cada variável
 // de ambiente a 256 caracteres, e o base64 das contas estourava esse limite.
 //
@@ -30,20 +35,22 @@ export function getCredentials(): Credentials {
             .map((e) => e.trim())
             .filter(Boolean);
 
-        const name = process.env.DEVICEFARM_DEVICE_NAME ?? '';
+        // Modelo do device via capabilities da sessão (ex.: "SM-S918U1").
+        const model = String((browser?.capabilities as any)?.deviceModel ?? '');
         const map = deviceIndex[isIOS ? 'ios' : 'android'];
-        const index = map[name];
+        // Casa por prefixo: a chave do mapa é o prefixo do modelo (sem sufixo de região).
+        const index = Object.entries(map).find(([prefix]) => model.startsWith(prefix))?.[1];
 
         if (index !== undefined && index >= 0 && index < emails.length) {
             const user = emails[index];
             console.log(
-                `🔑 Device "${name}" -> conta[${index}] = ${user}`
+                `🔑 Device model "${model}" -> conta[${index}] = ${user}`
             );
             return { user, password };
         }
 
         console.warn(
-            `⚠️ Device não mapeado em device-index.ts: "${name}" ` +
+            `⚠️ Modelo não mapeado em device-index.ts: "${model}" ` +
             `(plataforma ${isIOS ? 'ios' : 'android'}, índice=${index}). ` +
             `Usando conta[0] como fallback — ajuste o mapa para garantir ` +
             `unicidade.`
