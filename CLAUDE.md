@@ -232,6 +232,14 @@ Node ESM script that generates `reports/index.html` listing all `run-N-DATE/` di
 
 The `reports` branch is an orphan branch served by GitHub Pages. Each CI run creates `reports/run-{RUN_NUMBER}-{DATE}/` with **two** Allure HTML reports in subfolders: `android/` and `ios/`. Each platform keeps its own Trend history (copied per-platform from the previous run's matching subfolder). The root index (`scripts/generate-report-index.mjs`) lists each run with separate **Android** and **iOS** columns; runs published before the split have a single "legado" link. Reports accumulate indefinitely — deletion is manual only. The index is at the root of the GitHub Pages URL.
 
-**Seleção de device no relatório:** o pool roda vários devices por plataforma, mas o relatório traz **apenas um** — o **primeiro device cujo job resultou `PASSED`** (garante que o vídeo é de um teste que passou). Se nenhum passou, cai no **primeiro device** como fallback. O passo "Download artifacts" de cada job baixa só o `Customer Artifacts` (zip com o `allure-results` daquele device, incluindo o vídeo) do device escolhido — antes baixava o zip de todos com o mesmo nome, sobrescrevendo até sobrar um aleatório.
+**Todos os devices no relatório (navegável por aparelho):** o pool roda vários devices por plataforma e o relatório junta **todos**. O passo "Download artifacts" baixa o `Customer Artifacts` (zip com o `allure-results`, incluindo o vídeo) da `Tests Suite` de **cada** device (`artifacts/ca-<i>.zip`); o passo "Extract" extrai cada zip num subdir próprio e **mescla** tudo num único `allure-results/` com `cp -rn` (arquivos de resultado/anexo têm nome UUID → únicos entre devices; os fixos — `environment.properties`/`categories.json`/`executor.json` — ficam com 1 cópia).
+
+Cada execução é rotulada em runtime no `test.spec.ts` para dar a navegação por aparelho:
+- `allure.addParentSuite("<device> — <conta>")` → na aba **Suites** cada aparelho é um nó (com a conta usada); expanda para ver a execução dele (vídeo, passos).
+- `allure.addArgument('Device', <device>)` — além de exibir o device nos **Parameters**, **separa o `historyId`** por aparelho (sem isso os N resultados colapsariam como retries de um único teste).
+- `allure.addArgument('Conta', <email>)` — mostra qual conta rodou naquele device (conta escolhida em `test/utils/credentials.ts`).
+- `allure.addLabel('host', <device>)` — a aba **Timeline** também separa por aparelho.
+
+O nome amigável do device vem de `test/utils/device-name.ts` (`friendlyDeviceName()`, mapeia `browser.capabilities.deviceModel` → nome; fallback `AVD-S24` local).
 
 **Vídeo reproduzível (re-encode no `publish-report`):** antes do `allure generate`, o job re-encoda qualquer `.mp4` que não seja `h264` para H.264 + `+faststart` (mantendo o nome, para a referência no `*-result.json` seguir válida). O iOS (Appium 1.x) grava em MJPEG (`mp4v`), que o navegador não toca em `<video>`; o Android (MediaProjection sob Appium 2) já é h264 e é pulado.

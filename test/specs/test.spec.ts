@@ -4,6 +4,7 @@ import { CategoriasPage } from "../pageobjects/CategoriasPage";
 import { PerfilPage } from "../pageobjects/PerfilPage";
 import { FavoritosPage } from "../pageobjects/FavoritosPage";
 import { getCredentials } from "../utils/credentials";
+import { friendlyDeviceName } from "../utils/device-name";
 import allure from '@wdio/allure-reporter';
 import { Status } from 'allure-js-commons';
 
@@ -29,6 +30,14 @@ describe('Teste Login e Perfil', () => {
         const favoritosPage = new FavoritosPage();
 
         const { user, password } = getCredentials();
+
+        // Rotula a execução por aparelho para o relatório Allure juntar TODOS os devices
+        // num só e permitir navegar por aparelho (aba Suites) mostrando a conta usada.
+        const device = friendlyDeviceName();
+        await allure.addParentSuite(`${device} — ${user}`); // nó do aparelho na aba Suites (com a conta)
+        await allure.addArgument('Device', device);          // param visível + separa o historyId por device
+        await allure.addArgument('Conta', user);             // qual conta rodou neste device
+        await allure.addLabel('host', device);               // aba Timeline agrupa por aparelho
 
         await step('homePage.ativarApp()', () => homePage.ativarApp());
         await step('homePage.abrirPerfil()', () => homePage.abrirPerfil());

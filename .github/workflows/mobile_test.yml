@@ -190,31 +190,28 @@ jobs:
           RUN_ARN="${{ steps.schedule.outputs.run_arn }}"
           mkdir -p artifacts allure-results
 
-          # O relatório deve trazer apenas UM device: o primeiro que PASSOU (garante que o
-          # vídeo é de um teste que passou). Se nenhum passou, cai no primeiro device como
-          # fallback para o relatório não ficar vazio.
-          CHOSEN_JOB=""
-          FIRST_JOB=""
+          # O relatório junta TODOS os devices: baixa o "Customer Artifacts" (zip com o
+          # allure-results, incl. vídeo) da Tests Suite de CADA device do run. Cada resultado
+          # já carrega o rótulo do aparelho/conta (test.spec.ts) para a navegação por device.
+          i=0
           for JOB_ARN in $(aws devicefarm list-jobs --arn "$RUN_ARN" --region us-west-2 | jq -r '.jobs[].arn'); do
-            [ -z "$FIRST_JOB" ] && FIRST_JOB="$JOB_ARN"
-            RES=$(aws devicefarm get-job --arn "$JOB_ARN" --region us-west-2 | jq -r '.job.result')
             NAME=$(aws devicefarm get-job --arn "$JOB_ARN" --region us-west-2 | jq -r '.job.device.name')
-            echo "Device: $NAME -> $RES"
-            if [ "$RES" = "PASSED" ] && [ -z "$CHOSEN_JOB" ]; then CHOSEN_JOB="$JOB_ARN"; fi
+            SUITE_ARN=$(aws devicefarm list-suites --arn "$JOB_ARN" --region us-west-2 \
+              | jq -r '.suites[] | select(.name=="Tests Suite") | .arn')
+            if [ -z "$SUITE_ARN" ] || [ "$SUITE_ARN" = "null" ]; then
+              echo "Sem Tests Suite (pulando): $NAME"; i=$((i+1)); continue
+            fi
+            TEST_ARN=$(aws devicefarm list-tests --arn "$SUITE_ARN" --region us-west-2 | jq -r '.tests[0].arn')
+            URL=$(aws devicefarm list-artifacts --arn "$TEST_ARN" --type FILE --region us-west-2 \
+              | jq -r '.artifacts[] | select(.name=="Customer Artifacts") | .url')
+            if [ -n "$URL" ] && [ "$URL" != "null" ]; then
+              curl -sL --retry 3 --max-time 180 "$URL" -o "artifacts/ca-$i.zip" || true
+              echo "Baixado Customer Artifacts de: $NAME -> ca-$i.zip"
+            else
+              echo "Sem Customer Artifacts: $NAME"
+            fi
+            i=$((i+1))
           done
-          [ -z "$CHOSEN_JOB" ] && CHOSEN_JOB="$FIRST_JOB"
-          echo "Device escolhido para o relatório: $CHOSEN_JOB"
-
-          # Baixa só o "Customer Artifacts" (zip com o allure-results, incl. vídeo) da
-          # Tests Suite do device escolhido.
-          SUITE_ARN=$(aws devicefarm list-suites --arn "$CHOSEN_JOB" --region us-west-2 \
-            | jq -r '.suites[] | select(.name=="Tests Suite") | .arn')
-          TEST_ARN=$(aws devicefarm list-tests --arn "$SUITE_ARN" --region us-west-2 | jq -r '.tests[0].arn')
-          URL=$(aws devicefarm list-artifacts --arn "$TEST_ARN" --type FILE --region us-west-2 \
-            | jq -r '.artifacts[] | select(.name=="Customer Artifacts") | .url')
-          if [ -n "$URL" ] && [ "$URL" != "null" ]; then
-            curl -sL --retry 3 --max-time 180 "$URL" -o "artifacts/customer-artifacts.zip" || true
-          fi
 
           echo "Artifacts baixados: $(ls artifacts/ | wc -l) arquivos"
           ls -la artifacts/
@@ -231,18 +228,23 @@ jobs:
       - name: Extract allure-results from artifacts
         if: always()
         run: |
-          # O Device Farm salva "Customer Artifacts" como zip SEM extensão e com o
-          # allure-results aninhado em Host_Machine_Files/$DEVICEFARM_LOG_DIR/allure-results/.
-          # Extrai qualquer arquivo que seja zip e procura allure-results em qualquer profundidade.
+          # Cada "Customer Artifacts" é um zip com o allure-results aninhado em
+          # Host_Machine_Files/$DEVICEFARM_LOG_DIR/allure-results/. Extrai cada zip num subdir
+          # próprio e MESCLA todos os allure-results num só. Os arquivos de resultado/anexo têm
+          # nome UUID (únicos entre devices), então cp -n (no-clobber) traz todos; os fixos
+          # (environment.properties, categories.json, executor.json) ficam com 1 cópia.
           mkdir -p extracted
+          n=0
           for f in artifacts/*; do
             [ -f "$f" ] || continue
             if unzip -l "$f" >/dev/null 2>&1; then
-              unzip -o "$f" -d extracted >/dev/null 2>&1 || true
+              mkdir -p "extracted/dev-$n"
+              unzip -o "$f" -d "extracted/dev-$n" >/dev/null 2>&1 || true
+              n=$((n+1))
             fi
           done
           find extracted -type d -name allure-results | while read -r d; do
-            cp -r "$d/." allure-results/ 2>/dev/null || true
+            cp -rn "$d/." allure-results/ 2>/dev/null || true
           done
           echo "Arquivos em allure-results/: $(ls allure-results/ 2>/dev/null | wc -l)"
           ls -la allure-results/ 2>/dev/null || true
@@ -439,30 +441,28 @@ jobs:
           RUN_ARN="${{ steps.schedule_ios.outputs.run_arn }}"
           mkdir -p artifacts allure-results
 
-          # Mesma regra do Android: primeiro device que PASSOU; senão, primeiro device.
-          # Obs.: enquanto o fluxo iOS (ativarApp/onboarding) não for implementado, nenhum
-          # device iOS passa, então cai sempre no fallback (vídeo de um device que falhou,
-          # porém reproduzível após o re-encode no job publish-report).
-          CHOSEN_JOB=""
-          FIRST_JOB=""
+          # Mesma regra do Android: junta TODOS os devices no relatório — baixa o "Customer
+          # Artifacts" da Tests Suite de cada aparelho. (Enquanto o fluxo iOS não passar no
+          # onboarding, os resultados vêm com falha, mas cada device ainda aparece navegável.)
+          i=0
           for JOB_ARN in $(aws devicefarm list-jobs --arn "$RUN_ARN" --region us-west-2 | jq -r '.jobs[].arn'); do
-            [ -z "$FIRST_JOB" ] && FIRST_JOB="$JOB_ARN"
-            RES=$(aws devicefarm get-job --arn "$JOB_ARN" --region us-west-2 | jq -r '.job.result')
             NAME=$(aws devicefarm get-job --arn "$JOB_ARN" --region us-west-2 | jq -r '.job.device.name')
-            echo "Device: $NAME -> $RES"
-            if [ "$RES" = "PASSED" ] && [ -z "$CHOSEN_JOB" ]; then CHOSEN_JOB="$JOB_ARN"; fi
+            SUITE_ARN=$(aws devicefarm list-suites --arn "$JOB_ARN" --region us-west-2 \
+              | jq -r '.suites[] | select(.name=="Tests Suite") | .arn')
+            if [ -z "$SUITE_ARN" ] || [ "$SUITE_ARN" = "null" ]; then
+              echo "Sem Tests Suite (pulando): $NAME"; i=$((i+1)); continue
+            fi
+            TEST_ARN=$(aws devicefarm list-tests --arn "$SUITE_ARN" --region us-west-2 | jq -r '.tests[0].arn')
+            URL=$(aws devicefarm list-artifacts --arn "$TEST_ARN" --type FILE --region us-west-2 \
+              | jq -r '.artifacts[] | select(.name=="Customer Artifacts") | .url')
+            if [ -n "$URL" ] && [ "$URL" != "null" ]; then
+              curl -sL --retry 3 --max-time 180 "$URL" -o "artifacts/ca-$i.zip" || true
+              echo "Baixado Customer Artifacts de: $NAME -> ca-$i.zip"
+            else
+              echo "Sem Customer Artifacts: $NAME"
+            fi
+            i=$((i+1))
           done
-          [ -z "$CHOSEN_JOB" ] && CHOSEN_JOB="$FIRST_JOB"
-          echo "Device iOS escolhido para o relatório: $CHOSEN_JOB"
-
-          SUITE_ARN=$(aws devicefarm list-suites --arn "$CHOSEN_JOB" --region us-west-2 \
-            | jq -r '.suites[] | select(.name=="Tests Suite") | .arn')
-          TEST_ARN=$(aws devicefarm list-tests --arn "$SUITE_ARN" --region us-west-2 | jq -r '.tests[0].arn')
-          URL=$(aws devicefarm list-artifacts --arn "$TEST_ARN" --type FILE --region us-west-2 \
-            | jq -r '.artifacts[] | select(.name=="Customer Artifacts") | .url')
-          if [ -n "$URL" ] && [ "$URL" != "null" ]; then
-            curl -sL --retry 3 --max-time 180 "$URL" -o "artifacts/customer-artifacts.zip" || true
-          fi
           echo "Artifacts iOS baixados: $(ls artifacts/ | wc -l) arquivos"
 
       - name: Upload raw iOS Device Farm artifacts (debug)
@@ -477,16 +477,21 @@ jobs:
       - name: Extract allure-results from iOS artifacts
         if: always()
         run: |
-          # "Customer Artifacts" é zip SEM extensão, com allure-results aninhado.
+          # Cada "Customer Artifacts" é um zip com o allure-results aninhado. Extrai cada um num
+          # subdir próprio e MESCLA todos num só (cp -n: arquivos UUID únicos entram todos; os
+          # fixos ficam com 1 cópia).
           mkdir -p extracted
+          n=0
           for f in artifacts/*; do
             [ -f "$f" ] || continue
             if unzip -l "$f" >/dev/null 2>&1; then
-              unzip -o "$f" -d extracted >/dev/null 2>&1 || true
+              mkdir -p "extracted/dev-$n"
+              unzip -o "$f" -d "extracted/dev-$n" >/dev/null 2>&1 || true
+              n=$((n+1))
             fi
           done
           find extracted -type d -name allure-results | while read -r d; do
-            cp -r "$d/." allure-results/ 2>/dev/null || true
+            cp -rn "$d/." allure-results/ 2>/dev/null || true
           done
           echo "Arquivos em allure-results/ (iOS): $(ls allure-results/ 2>/dev/null | wc -l)"
           ls -la allure-results/ 2>/dev/null || true
