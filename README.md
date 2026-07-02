@@ -105,10 +105,44 @@ O workflow `.github/workflows/mobile_test.yml` executa dois jobs em paralelo a c
 | `DEVICE_FARM_PROJECT_ARN` | ARN do projeto no Device Farm |
 | `DEVICE_FARM_DEVICE_POOL_ARN` | Pool de devices Android |
 | `DEVICE_FARM_IOS_DEVICE_POOL_ARN` | Pool de devices iOS |
-| `CLIENT_USER` | Email de login do app |
-| `CLIENT_PASSWORD` | Senha de login do app |
+| `CLIENT_USER` | Email de login do app (fallback local / single device) |
+| `CLIENT_PASSWORD` | Senha de login do app (comum a todas as contas) |
+| `CLIENT_USERS_ANDROID_EMAILS` | CSV dos emails das contas Android (1 por device, na ordem do pool) — ver "Conta distinta por device" |
+| `CLIENT_USERS_IOS_EMAILS` | CSV dos emails das contas iOS (1 por device, na ordem do pool) |
 | `EXPO_TOKEN` | Token EAS para download de builds |
 | `EXPO_PROJECT_ID` | UUID do projeto ecomm no EAS (expo.dev → projeto → Project Settings → Project ID) |
+
+### Conta distinta por device (multiusuário no Device Farm)
+
+No Device Farm o pool roda vários devices em paralelo. Se todos logarem com a mesma
+conta, eles disputam o mesmo produto na tela de Favoritos (um adiciona / outro remove)
+e o teste falha de forma intermitente. Para evitar isso, **cada device usa uma conta
+distinta**, escolhida em runtime pelo modelo do aparelho:
+
+- As variáveis de ambiente do Device Farm são globais ao run (todos os devices recebem
+  as mesmas), então a lista de contas viaja num CSV único por plataforma
+  (`CLIENT_USERS_EMAILS`), com a **senha comum** em `CLIENT_PASSWORD`.
+- `test/utils/device-index.ts` mapeia o **modelo** do device (`browser.capabilities.deviceModel`,
+  ex.: `SM-S918U1`) → índice na lista. `test/utils/credentials.ts` casa por prefixo e
+  devolve `emails[index]`. Log em runtime: `🔑 Device model "…" -> conta[N] = email`.
+- O CSV é transportado em **texto puro** (não base64): o Device Farm limita cada env var
+  a 256 caracteres e o base64 do JSON das contas estourava esse limite.
+
+Os secrets `CLIENT_USERS_ANDROID_EMAILS` / `CLIENT_USERS_IOS_EMAILS` recebem apenas o CSV
+de emails. **A ordem dos emails define o índice da conta e precisa casar com `device-index.ts`:**
+
+| Índice | Android (`device-index.ts`) | iOS (`device-index.ts`) |
+|---|---|---|
+| 0 | Galaxy S23 Ultra (`SM-S918`) | iPhone 13 (`A2482`) |
+| 1 | Galaxy S23+ (`SM-S916`) | iPhone 14 (`A2649`) |
+| 2 | Galaxy S24 Ultra (`SM-S928`) | iPhone 14 Pro Max (`A2651`) |
+| 3 | Galaxy S24+ (`SM-S926`) | iPhone 15 (`A2846`) |
+| 4 | Galaxy S25 Ultra (`SM-S938`) | iPhone 15 Pro Max (`A2849`) |
+| 5 | Galaxy S26 Ultra (`SM-S948`) | — |
+
+> Se um device não casar nenhum prefixo, cai em `conta[0]` (com `warn` no log) — ajuste
+> o mapa antes de confiar na unicidade. O mapeamento iOS é best-effort e ainda não foi
+> verificado em runtime.
 
 ---
 

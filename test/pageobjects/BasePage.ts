@@ -184,34 +184,3 @@ export const forceScrollBeforeSearching = async (scrolls: number = 6) => {
 
 export const timewhait = 3000;
 
-// APP Android
-// const el1 = await driver.$("accessibility id:linear-gradient");
-// await el1.click();
-// const el2 = await driver.$("-ios class chain:**/XCUIElementTypeStaticText[`name == \"Você precisa aceitar os termos de política de privacidade para continuar.\"`][2]");
-// await el2.click();
-// const el3 = await driver.$("-ios class chain:**/XCUIElementTypeStaticText[`name == \"Você precisa aceitar os termos de política de privacidade para continuar.\"`][2]");
-// await el3.click();
-// const el4 = await driver.$("accessibility id:accept-button");
-// await el4.click();
-// const el5 = await driver.$("accessibility id:accept-button");
-// await el5.click();
-// const el6 = await driver.$("accessibility id:accept-button");
-// await el6.click();
-// const el7 = await driver.$("accessibility id:tab-menu");
-// await el7.click();
-// const el8 = await driver.$("accessibility id:Register or login");
-// await el8.click();
-// const el9 = await driver.$("accessibility id:Email");
-// await el9.addValue("marciorocha@maildrop.cc");
-// const el10 = await driver.$("accessibility id:Password *");
-// await el10.addValue("Maje1425");
-// const el15 = await driver.$("accessibility id:Back");
-// await el15.click();
-// const el16 = await driver.$("accessibility id:Register or login");
-// await el16.click();
-// const el17 = await driver.$("accessibility id:Password *");
-// await el17.addValue("Maje1425");
-// const el18 = await driver.$("accessibility id:Email");
-// await el18.addValue("marciorocha@maildrop.cc");
-// const el19 = await driver.$("-ios class chain:**/XCUIElementTypeOther[`name == \"pressable\"`][1]");
-// await el19.click();
