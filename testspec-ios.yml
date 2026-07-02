@@ -14,7 +14,16 @@ phases:
       - '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"'
       - nvm use 18
       - cd $DEVICEFARM_TEST_PACKAGE_PATH
-      - npm install
+      # Retry no npm install: o host do Device Farm às vezes derruba a conexão baixando
+      # pacotes (ECONNRESET) → sem deps o `npm run wdio` dá "wdio: command not found", o
+      # teste nem roda e o device some do relatório. Tenta até 3x; se esgotar, erra claro aqui.
+      - |
+        n=0
+        until npm install; do
+          n=$((n+1))
+          if [ $n -ge 3 ]; then echo "npm install falhou após 3 tentativas"; exit 1; fi
+          echo "npm install falhou (tentativa $n) — nova tentativa em 10s"; sleep 10
+        done
       - 'echo "CLIENT_USER=$CLIENT_USER" > .env'
       - 'echo "CLIENT_PASSWORD=$CLIENT_PASSWORD" >> .env'
       - 'echo "CLIENT_USERS_EMAILS=$CLIENT_USERS_EMAILS" >> .env'
