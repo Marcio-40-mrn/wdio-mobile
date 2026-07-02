@@ -10,9 +10,18 @@ import { Status } from 'allure-js-commons';
 
 // npx wdio run ./wdio.conf.js --spec ./test/specs/test.spec.ts
 
+// Fechador de banner injetado no início de cada it(); usado pelo step() para tentar
+// dispensar o banner do Insider ANTES de cada passo. O banner pode surgir a qualquer
+// momento após o login, então em vez de espalhar chamadas manuais, todo passo tenta
+// fechá-lo primeiro. É no-op quando o banner não está visível (fechaBanner checa isDisplayed).
+let closeBannerIfPresent: (() => Promise<void>) | null = null;
+
 async function step(name: string, fn: () => Promise<void>) {
     allure.startStep(name);
     try {
+        if (closeBannerIfPresent) {
+            await closeBannerIfPresent();
+        }
         await fn();
         allure.endStep(Status.PASSED);
     } catch (e) {
@@ -30,6 +39,9 @@ describe('Teste Login e Perfil', () => {
         const favoritosPage = new FavoritosPage();
 
         const { user, password } = getCredentials();
+
+        // Habilita a limpeza automática do banner antes de cada step (ver comentário acima).
+        closeBannerIfPresent = () => homePage.fechaBanner();
 
         // Rotula a execução por aparelho para o relatório Allure juntar TODOS os devices
         // num só e permitir navegar por aparelho (aba Suites) mostrando a conta usada.
@@ -51,12 +63,9 @@ describe('Teste Login e Perfil', () => {
         await step('homePage.abrirPerfil()', () => homePage.abrirPerfil());
 
         await step('loginPage.logar()', () => loginPage.logar(user, password));
-        await step('homePage.fechaBanner()', () => homePage.fechaBanner());
         await step('homePage.abrirCategorias()', () => homePage.abrirCategorias());
-        await step('homePage.fechaBanner()', () => homePage.fechaBanner());
 
         await step('categoriaPage.clickRoupas()', () => categoriaPage.clickRoupas());
-        await step('homePage.fechaBanner()', () => homePage.fechaBanner());
         await step('categoriaPage.abrirCamisetas()', () => categoriaPage.abrirCamisas());
         await step('categoriaPage.selecionarProduto()', () => categoriaPage.selecionarProduto("Camisa Manga Longa Slim Poliviscose de Bambu Stretch Branco"));
         await step('categoriaPage.adicionarItemFavoritos()', () => categoriaPage.adicionarItemFavoritos());
