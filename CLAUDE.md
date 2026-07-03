@@ -214,6 +214,8 @@ Regardless of format (`.apk` or `.aab`), the final APK is always saved as `app.a
 
 Node ESM script that generates `reports/index.html` listing all `run-N-DATE/` directories in the `reports` branch, sorted newest-first.
 
+**Abordagem híbrida (compatível com repo privado):** a lista de runs é montada **em build-time**, varrendo as pastas `run-N/` em disco (`fs.readdirSync`) — o `publish-report` roda o script a partir da raiz do branch `reports` já checado out, então as `<tr>` já saem prontas no HTML e a tabela abre mesmo sem JavaScript. No cliente, um script enxuto faz apenas `HEAD` **same-origin** em cada link renderizado e esconde as células/linhas cuja pasta foi apagada manualmente (reflete deleções ao vivo, sem esperar o próximo run). **Não** usar a API do GitHub (`api.github.com/.../contents`) no cliente: ela responde **404** a requisições não autenticadas em repositório privado, quebrando o índice no Pages privado — o `HEAD` same-origin roda com a sessão já autenticada do Pages e funciona em qualquer repo.
+
 ### GitHub Secrets required
 
 | Secret | Purpose |

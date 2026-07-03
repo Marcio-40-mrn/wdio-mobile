@@ -2,17 +2,22 @@
 import fs from 'fs';
 import path from 'path';
 
-// Gera um index.html DINÂMICO para o branch `reports` (GitHub Pages).
+// Gera o index.html do branch `reports` (GitHub Pages) com abordagem HÍBRIDA.
 //
-// Por que dinâmico: antes o índice era "assado" varrendo as pastas run-N no disco no
-// momento da geração (no job publish-report). Quando um relatório era apagado manualmente
-// do branch reports, o index.html NÃO era regenerado e continuava listando pastas que já
-// não existiam (links 404). Agora a tabela é montada no navegador, consultando a API do
-// GitHub ao abrir a página — então ela reflete SEMPRE as pastas run-N que existem naquele
-// momento. Apagou a pasta, recarregou, o link some; sem regenerar nada.
+// Build-time (aqui, no CI): a lista de runs é montada varrendo as pastas run-N em disco
+// (fs.readdirSync). O job publish-report faz checkout completo do branch reports e roda este
+// script a partir da raiz dele, então enxergamos todas as pastas run-N. As <tr> já saem
+// preenchidas no HTML — a tabela abre mesmo sem JavaScript, sem depender de API externa.
 //
-// O conteúdo emitido é constante (não depende das pastas): o CI segue chamando este script
-// no publish-report, mas ele só reescreve o mesmo index.html dinâmico.
+// Cliente (no navegador): um script enxuto faz apenas HEAD *same-origin* em cada link já
+// renderizado e esconde as linhas/células cuja pasta foi apagada manualmente. Como é
+// same-origin (servido pelo próprio Pages, com a sessão já autenticada), funciona em
+// repositório PRIVADO — reflete deleções ao vivo sem esperar o próximo run do CI.
+//
+// Por que não usar a API do GitHub: a versão anterior chamava
+// https://api.github.com/repos/{owner}/{repo}/contents no cliente. Isso só funciona em repo
+// público; em repo privado a API responde 404 a requisições não autenticadas (e não há como
+// autenticar com segurança em JS estático), quebrando a página no Pages privado.
 
 const reportsDir = process.argv[2];
 if (!reportsDir) {
@@ -21,6 +26,43 @@ if (!reportsDir) {
 }
 
 const absDir = path.resolve(reportsDir);
+const entries = fs.readdirSync(absDir, { withFileTypes: true })
+    .filter(d => d.isDirectory() && /^run-\d+/.test(d.name))
+    .map(d => {
+        const match = d.name.match(/^run-(\d+)-(.+)$/);
+        const runNumber = match ? parseInt(match[1], 10) : 0;
+        const date = match ? match[2] : d.name;
+        const hasAndroid = fs.existsSync(path.join(absDir, d.name, 'android', 'index.html'));
+        const hasIos = fs.existsSync(path.join(absDir, d.name, 'ios', 'index.html'));
+        const hasLegacy = fs.existsSync(path.join(absDir, d.name, 'index.html'));
+        return { name: d.name, runNumber, date, hasAndroid, hasIos, hasLegacy };
+    })
+    .filter(e => e.hasAndroid || e.hasIos || e.hasLegacy)
+    .sort((a, b) => b.runNumber - a.runNumber);
+
+const cell = (exists, href, label) =>
+    exists ? `<a href="${href}">${label}</a>` : '—';
+
+const rows = entries.map(e => {
+    // Runs antigos (pré-separação) têm o relatório na raiz do run, sem subpastas.
+    if (!e.hasAndroid && !e.hasIos && e.hasLegacy) {
+        return `
+    <tr data-run="${e.name}">
+      <td>#${e.runNumber}</td>
+      <td>${e.date}</td>
+      <td colspan="2" data-check="./${e.name}/index.html"><a href="./${e.name}/index.html">Abrir Relatório (legado)</a></td>
+    </tr>`;
+    }
+    const androidHref = `./${e.name}/android/index.html`;
+    const iosHref = `./${e.name}/ios/index.html`;
+    return `
+    <tr data-run="${e.name}">
+      <td>#${e.runNumber}</td>
+      <td>${e.date}</td>
+      <td${e.hasAndroid ? ` data-check="${androidHref}"` : ''}>${cell(e.hasAndroid, androidHref, 'Abrir Android')}</td>
+      <td${e.hasIos ? ` data-check="${iosHref}"` : ''}>${cell(e.hasIos, iosHref, 'Abrir iOS')}</td>
+    </tr>`;
+}).join('\n');
 
 const html = `<!DOCTYPE html>
 <html lang="pt-BR">
@@ -47,85 +89,55 @@ const html = `<!DOCTYPE html>
   <p>Todas as execuções de teste estão listadas abaixo, da mais recente para a mais antiga.
      Os relatórios são gerados automaticamente após cada run no CI.
      A exclusão é apenas manual — a lista abaixo reflete sempre os relatórios que ainda existem.</p>
-  <div id="status" class="empty">Carregando relatórios…</div>
-  <table id="tbl" hidden>
+  ${entries.length === 0
+    ? '<p class="empty">Nenhum relatório ainda. Execute o workflow para gerar o primeiro relatório.</p>'
+    : `<table id="tbl">
     <thead>
       <tr><th>Run</th><th>Data</th><th>Android</th><th>iOS</th></tr>
     </thead>
-    <tbody id="tbody"></tbody>
+    <tbody>${rows}
+    </tbody>
   </table>
+  <p id="empty" class="empty" hidden>Nenhum relatório disponível.</p>`}
   <div class="footer">
     <p>Relatórios hospedados no GitHub Pages a partir do branch <code>reports</code>.
     Gerados com <a href="https://allurereport.org/">Allure Report</a>.</p>
   </div>
   <script>
+    // Poda ao vivo: HEAD same-origin em cada link já renderizado no build.
+    // Se a pasta foi apagada manualmente do branch reports, o HEAD dá 404 e a célula some
+    // (a linha inteira some se nenhuma célula sobrar). Same-origin → funciona em repo privado,
+    // sem consumir a API do GitHub. Sem JavaScript, a tabela ainda aparece (estado do build).
     (async () => {
-      const status = document.getElementById('status');
-      const tbody = document.getElementById('tbody');
-      const tbl = document.getElementById('tbl');
-
-      // Deriva owner/repo do próprio endereço do Pages
-      // (https://<owner>.github.io/<repo>/...), sem hardcode.
-      const owner = location.hostname.split('.')[0];
-      const repo = location.pathname.split('/').filter(Boolean)[0];
-
-      // HEAD same-origin (servido pelo Pages) — não consome a cota da API do GitHub.
-      const exists = async (url) => {
-        try { return (await fetch(url, { method: 'HEAD' })).ok; }
+      // Só considera "apagado" quando o servidor responde 404 de forma definitiva.
+      // Em erro de rede ou 5xx transitório, mantém o link (não esconde relatório válido).
+      const isDeleted = async (url) => {
+        try { return (await fetch(url, { method: 'HEAD' })).status === 404; }
         catch { return false; }
       };
-
-      try {
-        // 1 chamada à API lista as pastas da raiz do branch reports (reflete deleções ao vivo).
-        const res = await fetch(
-          \`https://api.github.com/repos/\${owner}/\${repo}/contents?ref=reports\`,
-          { headers: { Accept: 'application/vnd.github+json' } }
-        );
-        if (!res.ok) throw new Error('API ' + res.status);
-
-        const runs = (await res.json())
-          .filter((i) => i.type === 'dir' && /^run-\\d+/.test(i.name))
-          .map((i) => {
-            const m = i.name.match(/^run-(\\d+)-(.+)$/);
-            return { name: i.name, runNumber: m ? parseInt(m[1], 10) : 0, date: m ? m[2] : i.name };
-          })
-          .sort((a, b) => b.runNumber - a.runNumber);
-
-        // Detecta android/ios/legado por HEAD; relatórios pré-split têm index.html na raiz do run.
-        await Promise.all(runs.map(async (r) => {
-          const [android, ios] = await Promise.all([
-            exists(\`./\${r.name}/android/index.html\`),
-            exists(\`./\${r.name}/ios/index.html\`),
-          ]);
-          r.android = android;
-          r.ios = ios;
-          r.legacy = (!android && !ios) && await exists(\`./\${r.name}/index.html\`);
-        }));
-
-        // Mostra só o que realmente abre (android, ios ou legado).
-        const openable = runs.filter((r) => r.android || r.ios || r.legacy);
-        if (openable.length === 0) {
-          status.textContent = 'Nenhum relatório disponível.';
-          return;
-        }
-
-        const cell = (ok, href, label) => ok ? \`<a href="\${href}">\${label}</a>\` : '—';
-        tbody.innerHTML = openable.map((r) => {
-          if (!r.android && !r.ios && r.legacy) {
-            return \`<tr><td>#\${r.runNumber}</td><td>\${r.date}</td>\` +
-                   \`<td colspan="2"><a href="./\${r.name}/index.html">Abrir Relatório (legado)</a></td></tr>\`;
+      const cells = Array.from(document.querySelectorAll('td[data-check]'));
+      await Promise.all(cells.map(async (td) => {
+        if (await isDeleted(td.getAttribute('data-check'))) {
+          td.removeAttribute('data-check');
+          if (td.hasAttribute('colspan')) {
+            td.innerHTML = '—';           // legado: mantém a linha, marca como indisponível
+          } else {
+            td.textContent = '—';         // android/ios: zera só a célula
           }
-          return \`<tr><td>#\${r.runNumber}</td><td>\${r.date}</td>\` +
-                 \`<td>\${cell(r.android, \`./\${r.name}/android/index.html\`, 'Abrir Android')}</td>\` +
-                 \`<td>\${cell(r.ios, \`./\${r.name}/ios/index.html\`, 'Abrir iOS')}</td></tr>\`;
-        }).join('');
-
-        status.hidden = true;
-        tbl.hidden = false;
-      } catch (e) {
-        status.textContent =
-          'Não foi possível carregar a lista de relatórios (' + e.message +
-          '). Recarregue em alguns minutos.';
+        }
+      }));
+      // Remove linhas que ficaram sem nenhum link válido.
+      const tbody = document.querySelector('#tbl tbody');
+      if (tbody) {
+        Array.from(tbody.rows).forEach((tr) => {
+          if (!tr.querySelector('a')) tr.remove();
+        });
+        if (tbody.rows.length === 0) {
+          const tbl = document.getElementById('tbl');
+          const empty = document.getElementById('empty');
+          if (tbl) tbl.hidden = true;
+          if (empty) empty.hidden = false;
+        }
       }
     })();
   </script>
@@ -134,4 +146,4 @@ const html = `<!DOCTYPE html>
 
 const outputPath = path.join(absDir, 'index.html');
 fs.writeFileSync(outputPath, html, 'utf8');
-console.log(`index.html (dinâmico) escrito em ${outputPath}`);
+console.log(`index.html escrito em ${outputPath} (${entries.length} runs listados)`);
