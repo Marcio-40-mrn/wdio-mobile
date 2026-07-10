@@ -66,18 +66,3 @@ export class CategoriasPage extends BasePage {
 
 }
 
-// const el4 = await driver.$("-android uiautomator:new UiSelector().text(\"Camisa Manga Longa Slim Poliviscose de Bambu Stretch Branco\")");
-// await el4.click();
-// const el5 = await driver.$("-android uiautomator:new UiSelector().className(\"com.horcrux.svg.SvgView\").instance(0)");
-// await el5.click();
-// const el4 = await driver.$("id:com.aramis.ecomm:id/buttonContainer");
-// await el4.click();
-// const el5 = await driver.$("");
-// await el5.click();
-// const el6 = await driver.$("accessibility id:Back");
-// await el6.click();
-
-
-
-
-

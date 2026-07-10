@@ -25,14 +25,6 @@ export class HomePage extends BasePage {
         await driver.pause(timewhait);
     }
 
-    // async abrirPerfil() {
-    //     const element = await $("accessibility id:Perfil");
-    //     await this.waitForElement(element);
-    //     await element.click();
-    //     await driver.pause(timewhait);
-    // }
-
-
     async abrirCategorias() {
         const element = await $("accessibility id:Categorias");
         await this.waitForElement(element);
