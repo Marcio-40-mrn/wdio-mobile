@@ -59,9 +59,13 @@ jobs:
         run: npm ci
 
       # --- Criar ZIP do test package (inclui node_modules já instalado) ---
+      # -y (--symlinks): preserva os symlinks do node_modules. Sem isso, o zip achata
+      # node_modules/.bin/wdio (symlink -> ../@wdio/cli/bin/wdio.js) num arquivo comum, e o
+      # `import('../build/index.js')` do bin passa a resolver p/ node_modules/build/index.js
+      # (inexistente) -> ERR_MODULE_NOT_FOUND, WDIO quebra antes do onPrepare, relatório vazio.
       - name: Create test package ZIP
         run: |
-          zip -rq test-package.zip . \
+          zip -ryq test-package.zip . \
             --exclude ".git/*" \
             --exclude "allure-results/*" \
             --exclude "allure-report/*" \

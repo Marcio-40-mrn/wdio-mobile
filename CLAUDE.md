@@ -191,12 +191,26 @@ Device Farm test specs at the repo root:
 - `testspec-ios.yml` — usado pelo job iOS: `export PLATFORM=ios && npm run wdio`
 
 Ambos fazem:
-- `pre_test`: `npm install`, escreve `.env` a partir das env vars do Device Farm
+- `pre_test`: escreve `.env` a partir das env vars do Device Farm, sobe o Appium em background
 - `post_test`: copia `allure-results/` e `ctrf/` para `$DEVICEFARM_LOG_DIR`
+
+Diferença de instalação de deps entre os dois (ver "Otimização de tempo do CI" abaixo):
+- **`testspec.yml` (Android): NÃO roda `npm install`** — `node_modules` já vem empacotado no ZIP do test package.
+- **`testspec-ios.yml` (iOS): ainda roda `npm install`** no host macOS (decisão deliberada, ver abaixo).
 
 **Appium 2 no Android (`testspec.yml`):** a fase `install` roda `devicefarm-cli use appium 2`. Por padrão o Device Farm sobe **Appium 1.x**, que não tem `mobile: startMediaProjectionRecording` (vídeo Android cai no `catch` do `afterTest`) nem o `releaseActions`/`DELETE` do W3C usado pelos scrolls (`driver.performActions` → `NoSuchElementError` na maioria dos devices). O Appium 2 selecionado já vem com o driver UiAutomator2 compatível — não precisa adicionar `appium` ao `package.json`. **`testspec-ios.yml` continua no Appium 1.x** (host legado): migrar o iOS exigiria `ios_test_host: macos_sequoia` + `DEVICEFARM_APPIUM_WDA_DERIVED_DATA_PATH_V9`; fica para quando o fluxo de teste iOS for implementado.
 
 **Por que cada device mostra "3 testes" (Setup/Tests/Teardown Suite):** é a estrutura fixa que o Device Farm aplica a toda run — não vem da automação, não é configurável nem removível. Só a `Tests Suite` contém o teste real; o relatório Allure conta corretamente 1 teste.
+
+### Otimização de tempo do CI (decisão de projeto)
+
+O workflow levava ~30 min. Duas frentes de aceleração foram aplicadas (mantendo cobertura, todos os devices, vídeo e Trend):
+
+- **A — `node_modules` empacotado no ZIP (SOMENTE Android):** o job Android roda `npm ci` no runner e inclui `node_modules` no test package (o passo `Create test package ZIP` **não** exclui mais `node_modules/*`); em contrapartida, `testspec.yml` **não roda mais `npm install`**. Isso elimina o maior custo repetido do `pre_test` (uma instalação de deps por device, com retries de ECONNRESET). É seguro no Android porque, no Device Farm, `buildServices()` retorna `[]` — o WDIO só conecta no Appium já provido, então `node_modules` é só o runner WDIO/ts-node (JS puro). **Obrigatório zipar com `zip -ryq` (`-y` = preserva symlinks):** sem o `-y`, o zip achata `node_modules/.bin/wdio` (symlink → `../@wdio/cli/bin/wdio.js`) num arquivo comum e o `import('../build/index.js')` do bin resolve para `node_modules/build/index.js` (inexistente) → `ERR_MODULE_NOT_FOUND`, o WDIO quebra antes do `onPrepare` e o relatório sai vazio (regressão da run #44, diagnosticada no artefato "Test spec output" do device via AWS CLI).
+
+  **Por que A NÃO foi aplicado ao iOS (`testspec-ios.yml` mantém `npm install`):** (1) o `node_modules` é montado no runner **Ubuntu**; seguro para o host Linux do Android, mas o iOS roda o test package num **host macOS**, onde deps com binário nativo compilado no Linux podem não funcionar; (2) o teste iOS ainda quebra no onboarding (`ativarApp` TODO), então otimizar a instalação de um fluxo já quebrado adiciona risco sem ganho real. Alternativa segura pendente (item B, não implementado): trocar `npm install` por `npm ci --prefer-offline --no-audit --no-fund` no `testspec-ios.yml` (instalação continua no host macOS, ganho menor ~30–90s).
+
+- **C — Uploads paralelos + polls curtos (AMBOS os jobs, em `mobile_test.yml`):** os 3 uploads S3 (app / test package / testspec), antes sequenciais, viraram um único step com os `curl` em paralelo + um loop de espera combinado (`90×5s`). O poll de conclusão do run passou de `sleep 60`/120 iterações para `sleep 20`/360 iterações (mesmo teto ~2h, detecta o fim mais cedo). Como essa lógica vive no GitHub Actions e é só velocidade, foi aplicada aos dois jobs.
 
 ### `scripts/install-apk.mjs`
 
