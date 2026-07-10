@@ -36,7 +36,12 @@ phases:
   test:
     commands:
       - cd $DEVICEFARM_TEST_PACKAGE_PATH
-      - npm run wdio
+      # Chama o bin real do WDIO pelo caminho real, em vez de `npm run wdio` (que passa pelo
+      # symlink node_modules/.bin/wdio). O unzip do Device Farm NÃO restaura symlinks — materializa
+      # cada um como arquivo-texto com o caminho do alvo, então `.bin/wdio` quebra ("No such file
+      # or directory"). O wdio.js real faz `import('../build/index.js')` relativo à própria pasta
+      # (@wdio/cli/bin/ -> @wdio/cli/build/index.js), que existe, e não depende de symlink.
+      - node ./node_modules/@wdio/cli/bin/wdio.js run ./wdio.conf.ts
 
   post_test:
     commands:

@@ -187,7 +187,7 @@ trigger
 ### `testspec.yml` / `testspec-ios.yml`
 
 Device Farm test specs at the repo root:
-- `testspec.yml` — usado pelo job Android: `npm run wdio`
+- `testspec.yml` — usado pelo job Android: `node ./node_modules/@wdio/cli/bin/wdio.js run ./wdio.conf.ts` (bin real, não `npm run wdio` — ver "Armadilha dos symlinks" abaixo)
 - `testspec-ios.yml` — usado pelo job iOS: `export PLATFORM=ios && npm run wdio`
 
 Ambos fazem:
@@ -206,7 +206,9 @@ Diferença de instalação de deps entre os dois (ver "Otimização de tempo do 
 
 O workflow levava ~30 min. Duas frentes de aceleração foram aplicadas (mantendo cobertura, todos os devices, vídeo e Trend):
 
-- **A — `node_modules` empacotado no ZIP (SOMENTE Android):** o job Android roda `npm ci` no runner e inclui `node_modules` no test package (o passo `Create test package ZIP` **não** exclui mais `node_modules/*`); em contrapartida, `testspec.yml` **não roda mais `npm install`**. Isso elimina o maior custo repetido do `pre_test` (uma instalação de deps por device, com retries de ECONNRESET). É seguro no Android porque, no Device Farm, `buildServices()` retorna `[]` — o WDIO só conecta no Appium já provido, então `node_modules` é só o runner WDIO/ts-node (JS puro). **Obrigatório zipar com `zip -ryq` (`-y` = preserva symlinks):** sem o `-y`, o zip achata `node_modules/.bin/wdio` (symlink → `../@wdio/cli/bin/wdio.js`) num arquivo comum e o `import('../build/index.js')` do bin resolve para `node_modules/build/index.js` (inexistente) → `ERR_MODULE_NOT_FOUND`, o WDIO quebra antes do `onPrepare` e o relatório sai vazio (regressão da run #44, diagnosticada no artefato "Test spec output" do device via AWS CLI).
+- **A — `node_modules` empacotado no ZIP (SOMENTE Android):** o job Android roda `npm ci` no runner e inclui `node_modules` no test package (o passo `Create test package ZIP` **não** exclui mais `node_modules/*`); em contrapartida, `testspec.yml` **não roda mais `npm install`**. Isso elimina o maior custo repetido do `pre_test` (uma instalação de deps por device, com retries de ECONNRESET). É seguro no Android porque, no Device Farm, `buildServices()` retorna `[]` — o WDIO só conecta no Appium já provido, então `node_modules` é só o runner WDIO/ts-node (JS puro).
+
+  **Armadilha dos symlinks (o `testspec.yml` invoca o WDIO pelo caminho real, NÃO por `npm run wdio`):** `node_modules/.bin/wdio` é um symlink (`→ ../@wdio/cli/bin/wdio.js`). O **unzip do Device Farm não restaura symlinks** — materializa cada um como arquivo-texto com o caminho do alvo, então rodar `.bin/wdio` (via `npm run wdio`) quebra com `../@wdio/cli/bin/wdio.js: No such file or directory`. Zipar com `zip -ryq` (`-y`) também não salva: só troca o erro por esse mesmo "No such file or directory". **Fix definitivo:** na fase `test` do `testspec.yml`, chamar `node ./node_modules/@wdio/cli/bin/wdio.js run ./wdio.conf.ts` — o bin real faz `import('../build/index.js')` relativo à própria pasta (`@wdio/cli/build/index.js`, que existe) e não depende de symlink. (Diagnóstico das runs #44/#45 no artefato "Test spec output" do device via AWS CLI. O ZIP segue com `zip -ryq`, inofensivo.)
 
   **Por que A NÃO foi aplicado ao iOS (`testspec-ios.yml` mantém `npm install`):** (1) o `node_modules` é montado no runner **Ubuntu**; seguro para o host Linux do Android, mas o iOS roda o test package num **host macOS**, onde deps com binário nativo compilado no Linux podem não funcionar; (2) o teste iOS ainda quebra no onboarding (`ativarApp` TODO), então otimizar a instalação de um fluxo já quebrado adiciona risco sem ganho real. Alternativa segura pendente (item B, não implementado): trocar `npm install` por `npm ci --prefer-offline --no-audit --no-fund` no `testspec-ios.yml` (instalação continua no host macOS, ganho menor ~30–90s).
 
