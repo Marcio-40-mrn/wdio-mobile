@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execSync } from 'child_process';
-import { createWriteStream, existsSync, mkdirSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'fs';
+import { createWriteStream, existsSync, mkdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'fs';
 import https from 'https';
 import http from 'http';
 import os from 'os';
@@ -225,19 +225,71 @@ function download(url, dest) {
     });
 }
 
-function httpsGet(url) {
+// GET simples devolvendo { status, headers, body }. Os `headers` extras valem só para o host
+// da URL original: num redirect para outro host eles são descartados. Isso importa porque o
+// Authorization não pode vazar para fora da api.github.com — o endpoint de download do asset
+// (objects.githubusercontent.com) já vem assinado e rejeita requisição com token.
+function httpsGet(url, headers = {}) {
     return new Promise((resolve, reject) => {
-        https.get(url, { headers: { 'User-Agent': 'install-apk-script' } }, (res) => {
+        const origin = new URL(url).host;
+        https.get(url, { headers: { 'User-Agent': 'install-apk-script', ...headers } }, (res) => {
             if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
                 res.resume();
-                httpsGet(res.headers.location).then(resolve).catch(reject);
+                const next = new URL(res.headers.location, url);
+                httpsGet(next.href, next.host === origin ? headers : {}).then(resolve).catch(reject);
                 return;
             }
             let data = '';
             res.on('data', chunk => data += chunk);
-            res.on('end', () => resolve(data));
+            res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: data }));
         }).on('error', reject);
     });
+}
+
+// Versão usada quando a API do GitHub não responde. O nome do asset segue o padrão
+// bundletool-all-<versão>.jar em todos os releases.
+const BUNDLETOOL_FALLBACK_VERSION = '1.18.3';
+
+// Descobre a URL do bundletool mais recente pela API do GitHub.
+//
+// A API sem autenticação tem cota de 60 requisições/hora POR IP. Isso nunca aparece na
+// execução local, porque scripts/bundletool.jar fica cacheado e este bloco inteiro é pulado
+// pelo `if (!existsSync(...))`. No CI o jar nunca existe (é gitignored), então TODA run bate
+// na API — saindo por um IP de runner hospedado, compartilhado com muitos outros jobs, onde
+// os 60/h se esgotam com facilidade. Com GITHUB_TOKEN a cota vai para 5000/h.
+//
+// Se ainda assim a API falhar, cai numa URL fixa de release (que não passa pela API e não tem
+// rate limit) em vez de derrubar o pipeline.
+async function resolveBundletoolUrl() {
+    const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+    try {
+        const res = await httpsGet('https://api.github.com/repos/google/bundletool/releases/latest', {
+            Accept: 'application/vnd.github+json',
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        });
+
+        if (res.status !== 200) {
+            const reset = res.headers['x-ratelimit-reset'];
+            throw new Error(
+                `HTTP ${res.status} (autenticado: ${token ? 'sim' : 'NÃO'}` +
+                `, cota ${res.headers['x-ratelimit-remaining'] ?? '?'}/${res.headers['x-ratelimit-limit'] ?? '?'}` +
+                `, reset ${reset ? new Date(Number(reset) * 1000).toISOString() : '?'}) — ` +
+                res.body.slice(0, 200)
+            );
+        }
+
+        const release = JSON.parse(res.body);
+        const jarAsset = release.assets?.find(a => a.name.endsWith('.jar'));
+        if (!jarAsset) throw new Error(`release ${release.tag_name ?? '?'} não tem asset .jar`);
+
+        console.log(`Baixando bundletool ${release.tag_name}...`);
+        return jarAsset.browser_download_url;
+    } catch (err) {
+        console.warn(`Não foi possível consultar a API do GitHub: ${err.message}`);
+        console.warn(`Usando fallback fixo: bundletool ${BUNDLETOOL_FALLBACK_VERSION} (download direto, sem API).`);
+        return `https://github.com/google/bundletool/releases/download/${BUNDLETOOL_FALLBACK_VERSION}` +
+            `/bundletool-all-${BUNDLETOOL_FALLBACK_VERSION}.jar`;
+    }
 }
 
 console.log(`Fazendo download do ${isIpa ? 'IPA' : isAab ? 'AAB' : 'APK'}...`);
@@ -268,17 +320,15 @@ if (isIpa) {
 
     const bundletoolJar = path.join(projectRoot, 'scripts', 'bundletool.jar');
     if (!existsSync(bundletoolJar)) {
-        console.log('bundletool.jar não encontrado em scripts/. Baixando versão mais recente...');
-        const releaseJson = await httpsGet('https://api.github.com/repos/google/bundletool/releases/latest');
-        const release = JSON.parse(releaseJson);
-        const jarAsset = release.assets?.find(a => a.name.endsWith('.jar'));
-        if (!jarAsset) {
-            console.error('Não foi possível encontrar o bundletool.jar no release do GitHub.');
+        console.log('bundletool.jar não encontrado em scripts/. Baixando...');
+        try {
+            await download(await resolveBundletoolUrl(), bundletoolJar);
+        } catch (err) {
+            console.error(`Falha ao baixar o bundletool.jar: ${err.message}`);
+            if (existsSync(bundletoolJar)) rmSync(bundletoolJar, { force: true });
             unlinkSync(tmpArtifact);
             process.exit(1);
         }
-        console.log(`Baixando bundletool ${release.tag_name}...`);
-        await download(jarAsset.browser_download_url, bundletoolJar);
         console.log('bundletool.jar salvo em scripts/bundletool.jar');
     }
 
@@ -304,8 +354,11 @@ if (isIpa) {
     const tmpApksDir = path.join(projectRoot, 'tmp-apks-dir');
 
     console.log('Convertendo AAB → APK universal com bundletool...');
+    // -Xmx4g: o heap padrão da JVM é ~1/4 da RAM. No runner do GitHub (2 vCPU / 7 GB em repo
+    // privado) isso dá ~1,75 GB, apertado para o universal APK atual (~150 MB) — localmente
+    // a máquina tem folga e o default basta.
     execSync(
-        `java -jar "${bundletoolJar}" build-apks` +
+        `java -Xmx4g -jar "${bundletoolJar}" build-apks` +
         ` --bundle="${tmpArtifact}"` +
         ` --output="${tmpApks}"` +
         ` --mode=universal` +
@@ -340,3 +393,18 @@ if (isIpa) {
     unlinkSync(tmpApks);
     console.log('APK salvo em: app.apk');
 }
+
+// Guarda final: o CI sobe este artefato para o Device Farm no passo seguinte. Se ele não
+// existir ou vier truncado, falhar aqui — nomeando o passo — é melhor do que quebrar depois
+// no `curl -T` com um erro que não diz nada sobre a origem.
+const artifactPath = path.join(projectRoot, isIpa ? 'app.ipa' : 'app.apk');
+if (!existsSync(artifactPath)) {
+    console.error(`Conversão/download terminou sem gerar ${path.basename(artifactPath)}.`);
+    process.exit(1);
+}
+const artifactMB = statSync(artifactPath).size / 1024 / 1024;
+if (artifactMB < 10) {
+    console.error(`${path.basename(artifactPath)} tem apenas ${artifactMB.toFixed(1)} MB — artefato truncado.`);
+    process.exit(1);
+}
+console.log(`Artefato pronto: ${path.basename(artifactPath)} (${artifactMB.toFixed(1)} MB)`);

@@ -34,10 +34,31 @@ jobs:
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
           EXPO_PROJECT_ID: ${{ secrets.EXPO_PROJECT_ID }}
+          # Todo build development do Android no EAS é .aab, então este passo SEMPRE roda a
+          # conversão AAB -> APK, que baixa o bundletool da api.github.com. Sem token, essa API
+          # tem cota de 60 req/h POR IP — e o IP do runner é compartilhado, então o 403 é comum.
+          # Autenticado, vai para 5000/h. (Localmente isso nunca aparece: o jar fica cacheado em
+          # scripts/, que é gitignored e portanto nunca existe no checkout do CI.)
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          echo "::group::Ambiente da conversão AAB → APK"
+          java -version 2>&1 || echo "AVISO: java ausente — bundletool não roda"
+          df -h / | tail -1
+          echo "::endgroup::"
           node scripts/install-apk.mjs --no-install
+          ls -lh app.apk
           echo "APP_VERSION=$(jq -r '.appVersion' .build-info.json)" >> $GITHUB_ENV
           echo "APP_BUILD_VERSION=$(jq -r '.appBuildVersion' .build-info.json)" >> $GITHUB_ENV
+
+      # Guarda: sem esta checagem, uma falha na obtenção do APK só aparece lá na frente, no
+      # `curl -T`, com erro que não aponta a origem. Runs #47/#48 morreram antes daqui e o
+      # sintoma visível foi apenas "nenhuma run Android no Device Farm".
+      - name: Verify APK exists before upload
+        run: |
+          if [ ! -f app.apk ]; then
+            echo "::error::app.apk não foi gerado — a etapa 'Download APK from latest EAS Build' falhou (conversão AAB → APK). Nenhum upload será criado no Device Farm."
+            exit 1
+          fi
 
       # --- Upload APK para Device Farm ---
       - name: Create APK upload on Device Farm
@@ -590,22 +611,31 @@ jobs:
 
       - name: Generate Allure HTML reports per platform
         run: |
+          # "Tem resultado" = existe pelo menos um *-result.json. Diretório não-vazio não serve
+          # como critério: um job que falhou antes do Device Farm ainda deixa a pasta com os
+          # arquivos fixos (environment.properties/categories.json), e o Allure gera dali um
+          # relatório de 0 testes — indistinguível de "rodou e não achou nada". Foi o que
+          # aconteceu nos runs #44, #45, #47 e #48 do Android.
           for PLAT in android ios; do
             SRC="allure-results-$PLAT"
-            if [ -d "$SRC" ] && [ "$(ls -A "$SRC" 2>/dev/null)" ]; then
+            COUNT=$(find "$SRC" -name '*-result.json' 2>/dev/null | wc -l)
+            if [ "$COUNT" -gt 0 ]; then
               allure generate "./$SRC" --clean -o "./allure-report-$PLAT"
-              echo "Relatório $PLAT gerado"
+              echo "Relatório $PLAT gerado ($COUNT resultados)"
             else
-              echo "Sem resultados $PLAT — pulando geração"
+              NOME=$([ "$PLAT" = "android" ] && echo Android || echo iOS)
+              echo "::warning::$NOME sem resultados — relatório não gerado."
+              echo "**$NOME:** nenhum resultado — o job não chegou a agendar run no Device Farm." >> "$GITHUB_STEP_SUMMARY"
             fi
           done
 
       - name: Generate Allure single-file reports (baixável)
         if: always()
         run: |
+          # Mesmo critério do passo anterior: só gera com resultado de teste real.
           for PLAT in android ios; do
             SRC="allure-results-$PLAT"
-            if [ -d "$SRC" ] && [ "$(ls -A "$SRC" 2>/dev/null)" ]; then
+            if [ "$(find "$SRC" -name '*-result.json' 2>/dev/null | wc -l)" -gt 0 ]; then
               allure generate "./$SRC" --clean --single-file -o "./allure-single-$PLAT"
               echo "Single-file $PLAT em ./allure-single-$PLAT/index.html"
             else
