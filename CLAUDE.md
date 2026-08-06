@@ -250,6 +250,8 @@ Diferença de instalação de deps entre os dois (ver "Otimização de tempo do 
 
 **Por que cada device mostra "3 testes" (Setup/Tests/Teardown Suite):** é a estrutura fixa que o Device Farm aplica a toda run — não vem da automação, não é configurável nem removível. Só a `Tests Suite` contém o teste real; o relatório Allure conta corretamente 1 teste.
 
+**Esse agregado engana no console — não confie nele.** Como Setup e Teardown quase sempre passam, um run em que **todos** os devices falharam ainda aparece como "2 de 3 passed" por aparelho. Exemplo real (run #48, iOS): counters `15 total / 10 passed / 5 failed` com os 5 iPhones em `Tests Suite = FAILED` — os 10 "passed" eram só Setup+Teardown, e o console não indicava qual device teria funcionado (nenhum). Por isso o step `Download artifacts from Device Farm` (nos dois jobs) escreve no `$GITHUB_STEP_SUMMARY` uma tabela `Device | Teste | Detalhe` com o resultado da **`Tests Suite`** de cada aparelho. Sem custo de API: o `list-tests` já era chamado no mesmo loop para achar o `Customer Artifacts`; agora a resposta também alimenta a tabela. Para saber o que de fato aconteceu por aparelho, leia essa tabela ou o Allure — não os counters do run.
+
 ### Otimização de tempo do CI (decisão de projeto)
 
 O workflow levava ~30 min. Duas frentes de aceleração foram aplicadas (mantendo cobertura, todos os devices, vídeo e Trend):

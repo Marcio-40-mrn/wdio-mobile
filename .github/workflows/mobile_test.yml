@@ -213,15 +213,30 @@ jobs:
           # O relatório junta TODOS os devices: baixa o "Customer Artifacts" (zip com o
           # allure-results, incl. vídeo) da Tests Suite de CADA device do run. Cada resultado
           # já carrega o rótulo do aparelho/conta (test.spec.ts) para a navegação por device.
+          #
+          # O mesmo loop monta a tabela de resultado POR APARELHO no Step Summary. O agregado que
+          # o console do Device Farm mostra engana: ele conta 3 "testes" por device porque o
+          # próprio Device Farm cria as suites Setup e Teardown em volta da Tests Suite — num run
+          # em que TODOS os devices falharam, o painel ainda exibe 2/3 "passed" por aparelho. Aqui
+          # sai só o resultado da Tests Suite, que é o teste de verdade. Sem chamada extra à AWS:
+          # o list-tests já era feito para achar o artefato.
+          RESUMO=""
           i=0
           for JOB_ARN in $(aws devicefarm list-jobs --arn "$RUN_ARN" --region us-west-2 | jq -r '.jobs[].arn'); do
             NAME=$(aws devicefarm get-job --arn "$JOB_ARN" --region us-west-2 | jq -r '.job.device.name')
             SUITE_ARN=$(aws devicefarm list-suites --arn "$JOB_ARN" --region us-west-2 \
               | jq -r '.suites[] | select(.name=="Tests Suite") | .arn')
             if [ -z "$SUITE_ARN" ] || [ "$SUITE_ARN" = "null" ]; then
-              echo "Sem Tests Suite (pulando): $NAME"; i=$((i+1)); continue
+              echo "Sem Tests Suite (pulando): $NAME"
+              RESUMO="$RESUMO| $NAME | — | não executou (sem Tests Suite) |\n"
+              i=$((i+1)); continue
             fi
-            TEST_ARN=$(aws devicefarm list-tests --arn "$SUITE_ARN" --region us-west-2 | jq -r '.tests[0].arn')
+            TESTS_JSON=$(aws devicefarm list-tests --arn "$SUITE_ARN" --region us-west-2)
+            TEST_ARN=$(echo "$TESTS_JSON" | jq -r '.tests[0].arn')
+            # tr/cut: mensagem com "|" quebraria a linha da tabela markdown.
+            TEST_RESULT=$(echo "$TESTS_JSON" | jq -r '.tests[0].result // "?"')
+            TEST_MSG=$(echo "$TESTS_JSON" | jq -r '.tests[0].message // "—"' | tr '|' '/' | cut -c1-120)
+            RESUMO="$RESUMO| $NAME | $TEST_RESULT | $TEST_MSG |\n"
             URL=$(aws devicefarm list-artifacts --arn "$TEST_ARN" --type FILE --region us-west-2 \
               | jq -r '.artifacts[] | select(.name=="Customer Artifacts") | .url')
             if [ -n "$URL" ] && [ "$URL" != "null" ]; then
@@ -232,6 +247,18 @@ jobs:
             fi
             i=$((i+1))
           done
+
+          if [ -n "$RESUMO" ]; then
+            {
+              echo "### Android — resultado por aparelho"
+              echo ""
+              echo "| Device | Teste | Detalhe |"
+              echo "|---|---|---|"
+              printf "%b" "$RESUMO"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "**Android:** nenhum device retornou job — o run não chegou a existir." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
           echo "Artifacts baixados: $(ls artifacts/ | wc -l) arquivos"
           ls -la artifacts/
@@ -450,15 +477,24 @@ jobs:
           # Mesma regra do Android: junta TODOS os devices no relatório — baixa o "Customer
           # Artifacts" da Tests Suite de cada aparelho. (Enquanto o fluxo iOS não passar no
           # onboarding, os resultados vêm com falha, mas cada device ainda aparece navegável.)
+          # E, como no Android, o loop também monta a tabela por aparelho no Step Summary — o
+          # agregado do console conta as suites Setup/Teardown e mascara a falha real.
+          RESUMO=""
           i=0
           for JOB_ARN in $(aws devicefarm list-jobs --arn "$RUN_ARN" --region us-west-2 | jq -r '.jobs[].arn'); do
             NAME=$(aws devicefarm get-job --arn "$JOB_ARN" --region us-west-2 | jq -r '.job.device.name')
             SUITE_ARN=$(aws devicefarm list-suites --arn "$JOB_ARN" --region us-west-2 \
               | jq -r '.suites[] | select(.name=="Tests Suite") | .arn')
             if [ -z "$SUITE_ARN" ] || [ "$SUITE_ARN" = "null" ]; then
-              echo "Sem Tests Suite (pulando): $NAME"; i=$((i+1)); continue
+              echo "Sem Tests Suite (pulando): $NAME"
+              RESUMO="$RESUMO| $NAME | — | não executou (sem Tests Suite) |\n"
+              i=$((i+1)); continue
             fi
-            TEST_ARN=$(aws devicefarm list-tests --arn "$SUITE_ARN" --region us-west-2 | jq -r '.tests[0].arn')
+            TESTS_JSON=$(aws devicefarm list-tests --arn "$SUITE_ARN" --region us-west-2)
+            TEST_ARN=$(echo "$TESTS_JSON" | jq -r '.tests[0].arn')
+            TEST_RESULT=$(echo "$TESTS_JSON" | jq -r '.tests[0].result // "?"')
+            TEST_MSG=$(echo "$TESTS_JSON" | jq -r '.tests[0].message // "—"' | tr '|' '/' | cut -c1-120)
+            RESUMO="$RESUMO| $NAME | $TEST_RESULT | $TEST_MSG |\n"
             URL=$(aws devicefarm list-artifacts --arn "$TEST_ARN" --type FILE --region us-west-2 \
               | jq -r '.artifacts[] | select(.name=="Customer Artifacts") | .url')
             if [ -n "$URL" ] && [ "$URL" != "null" ]; then
@@ -469,6 +505,19 @@ jobs:
             fi
             i=$((i+1))
           done
+
+          if [ -n "$RESUMO" ]; then
+            {
+              echo "### iOS — resultado por aparelho"
+              echo ""
+              echo "| Device | Teste | Detalhe |"
+              echo "|---|---|---|"
+              printf "%b" "$RESUMO"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "**iOS:** nenhum device retornou job — o run não chegou a existir." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
           echo "Artifacts iOS baixados: $(ls artifacts/ | wc -l) arquivos"
 
       - name: Upload raw iOS Device Farm artifacts (debug)
