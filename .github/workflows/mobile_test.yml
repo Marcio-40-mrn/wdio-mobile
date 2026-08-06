@@ -628,7 +628,6 @@ jobs:
 
       - name: Re-encode vídeos para H.264 (player do navegador)
         if: always()
-        continue-on-error: true
         run: |
           # Normaliza TODOS os .mp4 (Android e iOS) para H.264 + faststart com bitrate
           # limitado e downscale, mantendo o mesmo nome (a referência no *-result.json
@@ -637,26 +636,64 @@ jobs:
           #    em <video> — precisa virar h264.
           #  - Android (MediaProjection): já é h264, MAS em resolução alta passava de 100MB
           #    (limite por arquivo do GitHub) e era apagado no publish -> vídeo 404 no
-          #    relatório. Re-encodar com -maxrate 2M + downscale garante <95MB.
-          # Por isso o re-encode agora é incondicional (antes pulava o que já era h264).
-          which ffmpeg >/dev/null 2>&1 || { sudo apt-get update -qq && sudo apt-get install -y ffmpeg; }
+          #    relatório. Re-encodar com bitrate limitado + downscale garante <95MB.
+          # Por isso o re-encode é incondicional (antes pulava o que já era h264).
+          #
+          # NÃO usar `continue-on-error` aqui: com ele, o step morria no meio do apt-get
+          # (o ffmpeg NÃO vem no runner) e saía com exit 1 sem re-encodar nada, virando uma
+          # anotação escondida — 26s gastos e zero vídeo comprimido. Agora a falha de
+          # instalação vira ::error:: visível, a falha por arquivo mantém o original, e o
+          # step termina em 0 de propósito para não bloquear a publicação do relatório.
+          set -uo pipefail
+
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            for ATTEMPT in 1 2 3; do
+              echo "Instalando ffmpeg (tentativa $ATTEMPT/3)..."
+              sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg && break
+              sleep 5
+            done
+          fi
+          if ! ffmpeg -version >/dev/null 2>&1; then
+            echo "::error::ffmpeg indisponível após 3 tentativas — re-encode PULADO. Vídeos iOS não vão tocar no navegador e arquivos >95MB serão descartados no publish."
+            exit 0
+          fi
+
+          ENCONTRADOS=0
+          REENCODADOS=0
+          FALHAS=0
           for PLAT in android ios; do
             SRC="allure-results-$PLAT"
             [ -d "$SRC" ] || continue
-            find "$SRC" -name "*.mp4" | while read -r f; do
+            # -print0 / read -d '': nome com espaço ou newline não quebra o loop.
+            # Redirecionar com < <(...) em vez de `find | while` mantém os contadores no shell
+            # atual — num pipe o while roda em subshell e os totais voltariam zerados.
+            while IFS= read -r -d '' f; do
+              ENCONTRADOS=$((ENCONTRADOS+1))
               codec=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 "$f" 2>/dev/null)
+              antes=$(du -m "$f" | cut -f1)
               if ffmpeg -y -loglevel error -i "$f" \
-                   -vf "scale=-2:'min(1280,ih)'" \
-                   -c:v libx264 -crf 28 -preset veryfast -maxrate 2M -bufsize 4M \
+                   -vf "scale=-2:'min(720,ih)'" \
+                   -c:v libx264 -crf 30 -preset veryfast -maxrate 1M -bufsize 2M \
                    -pix_fmt yuv420p -an -movflags +faststart "${f}.tmp.mp4"; then
                 mv "${f}.tmp.mp4" "$f"
-                echo "Re-encodado $f ($codec -> h264, <=720p/2Mbps)"
+                depois=$(du -m "$f" | cut -f1)
+                REENCODADOS=$((REENCODADOS+1))
+                echo "Re-encodado $f ($codec -> h264, ${antes}MB -> ${depois}MB)"
               else
                 rm -f "${f}.tmp.mp4"
-                echo "Falha ao re-encodar $f (codec $codec) — mantido original"
+                FALHAS=$((FALHAS+1))
+                echo "::warning::Falha ao re-encodar $f (codec $codec) — mantido original (${antes}MB)"
               fi
-            done
+            done < <(find "$SRC" -name "*.mp4" -print0)
           done
+
+          # Sem esse resumo, um no-op total (0 arquivos processados) é indistinguível de
+          # sucesso no log — foi exatamente assim que a quebra do step passou despercebida.
+          echo "Re-encode: $ENCONTRADOS vídeos encontrados, $REENCODADOS re-encodados, $FALHAS falhas"
+          if [ "$ENCONTRADOS" -eq 0 ]; then
+            echo "::warning::Nenhum .mp4 encontrado em allure-results-android/ios — nenhum device gravou vídeo."
+          fi
+          exit 0
 
       - name: Generate Allure HTML reports per platform
         run: |
