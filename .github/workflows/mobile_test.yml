@@ -567,6 +567,9 @@ jobs:
     if: always()
     permissions:
       contents: write
+      # actions: write — necessário para apagar os artifacts das runs podadas
+      # (step "Apagar artifacts das runs podadas").
+      actions: write
     # Serializa publicações de runs sobrepostas para evitar corrida de push na branch reports.
     concurrency:
       group: reports-publish
@@ -752,6 +755,16 @@ jobs:
         run: |
           RUN_DIR="run-${{ github.run_number }}-$(date -u +%Y-%m-%d)"
 
+          # Quantas execuções a branch `reports` mantém. Único lugar para mudar a retenção.
+          # Com 3 runs a branch fica em ~330MB, dentro do teto de 1GB de site publicado do Pages.
+          KEEP=3
+
+          # Números das runs podadas nesta publicação, um por linha. Fica FORA de
+          # reports-branch de propósito (senão seria commitado junto). O step
+          # "Apagar artifacts das runs podadas" lê daqui.
+          PRUNED_LIST="$GITHUB_WORKSPACE/pruned-runs.txt"
+          : > "$PRUNED_LIST"
+
           # --- Guarda: nada gerado -> não publica, mas explica claramente o motivo ---
           if [ ! -d "allure-report-android" ] && [ ! -d "allure-report-ios" ]; then
             MSG="Device Farm não retornou allure-results (Android nem iOS) — relatório não publicado nesta run."
@@ -777,38 +790,124 @@ jobs:
                 echo "Sem relatório $PLAT para copiar"
               fi
             done
+          }
+
+          # Mantém só os $KEEP runs mais recentes; apaga o resto do disco e registra o
+          # número de cada run removida em $PRUNED_LIST. Roda DEPOIS da cópia e ANTES do
+          # generate-report-index.mjs, para o índice já sair com as pastas finais.
+          # `sort -V` é o mesmo critério do step "Copy Allure history per platform" e
+          # ordena run-49 antes de run-100 (comparação numérica, não lexicográfica).
+          prune_old_runs() {
+            : > "$PRUNED_LIST"
+            local DIRS
+            DIRS=$(find . -maxdepth 1 -type d -name 'run-*' -printf '%f\n' | sort -V | head -n -"$KEEP")
+            if [ -z "$DIRS" ]; then
+              echo "Nada a podar (branch com no máximo $KEEP runs)."
+              return 0
+            fi
+            while IFS= read -r d; do
+              [ -z "$d" ] && continue
+              echo "Podando run antigo: $d"
+              rm -rf "$d"
+              printf '%s\n' "$d" | sed 's/^run-\([0-9]*\)-.*/\1/' >> "$PRUNED_LIST"
+            done <<< "$DIRS"
+          }
+
+          n=0
+          while true; do
+            # Árvore atualmente publicada, para detectar "nada mudou" (ver abaixo).
+            OLD_TREE=$(git rev-parse HEAD^{tree})
+
+            apply_changes
+            prune_old_runs
             node ../scripts/generate-report-index.mjs .
             # Remove anexos > 95MB (limite de 100MB por arquivo do GitHub).
             # Exclui .git/ — caso contrário o packfile (>95MB com vídeos acumulados)
             # é apagado e o git seguinte falha com "fatal: could not parse HEAD".
             find . -path './.git' -prune -o -type f -size +95M -print0 | xargs -0 -r rm -f
-          }
 
-          n=0
-          while true; do
-            apply_changes
+            # Commit ÓRFÃO + push --force: a branch é RECRIADA a cada publicação, com 1
+            # commit só contendo os $KEEP runs mantidos. Um `git rm` num commit normal
+            # limparia a tabela, mas os blobs (vídeos) continuariam no histórico — o
+            # repositório não encolheria e o checkout no CI seguiria lento.
+            git checkout -q --orphan "publish-$n"
             git add -A
-            if git diff --staged --quiet; then
-              echo "Nada novo para publicar."
+            git commit -q -m "Relatório: $RUN_DIR (mantendo os últimos $KEEP runs)"
+
+            # Num commit órfão `git diff --staged` nunca fica vazio (não há pai), por isso
+            # a comparação de "nada novo" é feita pelo hash da árvore.
+            if [ "$(git rev-parse HEAD^{tree})" = "$OLD_TREE" ]; then
+              echo "Árvore idêntica à já publicada — nada novo para publicar."
               echo "**Publicação:** nada novo para publicar nesta run." >> "$GITHUB_STEP_SUMMARY"
+              : > "$PRUNED_LIST"
               exit 0
             fi
-            git commit -m "Relatório: $RUN_DIR"
-            if git push origin HEAD:reports; then
+
+            if git push --force origin HEAD:reports; then
               echo "Relatório publicado com sucesso."
-              echo "**Publicação:** relatório \`$RUN_DIR\` publicado na branch reports." >> "$GITHUB_STEP_SUMMARY"
+              echo "**Publicação:** relatório \`$RUN_DIR\` publicado na branch reports (retenção: $KEEP runs)." >> "$GITHUB_STEP_SUMMARY"
+              if [ -s "$PRUNED_LIST" ]; then
+                echo "**Runs podados:** $(tr '\n' ' ' < "$PRUNED_LIST")" >> "$GITHUB_STEP_SUMMARY"
+              fi
               exit 0
             fi
+
             n=$((n+1))
             if [ "$n" -ge 5 ]; then
               echo "::error::Falha ao publicar o relatório após 5 tentativas (push rejeitado pelo remoto)."
               echo "**Publicação:** FALHOU após 5 tentativas de push na branch reports." >> "$GITHUB_STEP_SUMMARY"
+              # A poda não chegou ao remoto: não deixar o step seguinte apagar artifacts.
+              : > "$PRUNED_LIST"
               exit 1
             fi
-            echo "Push rejeitado (corrida com outra run) — re-sincronizando com o remoto (tentativa $n/5)"
-            git fetch origin reports
+            echo "Push rejeitado — re-sincronizando com o remoto (tentativa $n/5)"
+            git fetch --depth 1 origin reports
             git reset --hard FETCH_HEAD
+            git clean -fdq
           done
+
+      - name: Apagar artifacts das runs podadas
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Ao remover run-N-DATA/ da branch reports, os artifacts daquela run no GitHub
+          # ficam órfãos (o relatório navegável já não existe). Apaga por NOME EXATO — os
+          # seis nomes que o workflow publica por run. Falha aqui nunca derruba o job: o
+          # relatório já foi publicado e os artifacts têm retention-days: 30 de qualquer forma.
+          set -uo pipefail
+          PRUNED_LIST="$GITHUB_WORKSPACE/pruned-runs.txt"
+          if [ ! -s "$PRUNED_LIST" ]; then
+            echo "Nenhum run podado nesta publicação — nada a apagar."
+            exit 0
+          fi
+
+          ALL=$(gh api "repos/${{ github.repository }}/actions/artifacts" --paginate -q '.artifacts[] | "\(.id) \(.name)"' 2>/dev/null || true)
+          if [ -z "$ALL" ]; then
+            echo "::warning::Não foi possível listar os artifacts do repositório — nada apagado."
+            exit 0
+          fi
+
+          TOTAL=0
+          while IFS= read -r N; do
+            [ -z "$N" ] && continue
+            for NAME in "devicefarm-raw-android-$N" "allure-results-$N" \
+                        "devicefarm-raw-ios-$N" "allure-results-ios-$N" \
+                        "allure-report-android-$N" "allure-report-ios-$N"; do
+              while IFS=' ' read -r ID ANAME; do
+                [ "$ANAME" = "$NAME" ] || continue
+                if gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$ID" >/dev/null 2>&1; then
+                  echo "Apagado: $ANAME (id $ID)"
+                  TOTAL=$((TOTAL+1))
+                else
+                  echo "::warning::Falha ao apagar o artifact $ANAME (id $ID)"
+                fi
+              done <<< "$ALL"
+            done
+          done < "$PRUNED_LIST"
+
+          echo "$TOTAL artifact(s) apagado(s) das runs podadas: $(tr '\n' ' ' < "$PRUNED_LIST")"
+          exit 0
 
       - name: Print report URL
         run: |
