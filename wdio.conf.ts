@@ -156,13 +156,7 @@ export const config: WebdriverIO.Config = {
     reporters: ['spec',
         ['allure', {
         outputDir: 'allure-results',
-        // true de propósito: com false, o reporter anexa o CORPO DE RESPOSTA de todo comando
-        // WebDriver, e a resposta do stopMediaProjectionRecording é o vídeo inteiro em base64 —
-        // ou seja, cada vídeo ia para a branch `reports` DUAS vezes (o .mp4 de 33MB + um
-        // -attachment.json de 44MB com o mesmo conteúdo), ~264MB extras por run.
-        // Não se perde vídeo (o afterTest anexa o .mp4), nem os passos nomeados do step()
-        // no test.spec.ts, nem o stacktrace da falha — só a árvore de comandos individuais.
-        disableWebdriverStepsReporting: true,
+        disableWebdriverStepsReporting: false,
         disableWebdriverScreenshotsReporting: false,}],
         ['ctrf-json', {
         outputDir: './ctrf',

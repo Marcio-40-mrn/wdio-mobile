@@ -159,8 +159,6 @@ Three reporters run in parallel:
 
 Video is captured via Appium and attached directly to the Allure result — no external tool or ffmpeg needed. Android no Device Farm usa MediaProjection (`mobile: startMediaProjectionRecording`/`stopMediaProjectionRecording`); local e iOS usam `startRecordingScreen`/`stopRecordingScreen`.
 
-**`disableWebdriverStepsReporting: true` é deliberado** (`wdio.conf.ts`). Com `false`, o reporter Allure anexa o **corpo de resposta de todo comando WebDriver** — e a resposta do `stopMediaProjectionRecording` é o vídeo inteiro em base64. Resultado: cada vídeo ia parar na branch `reports` **duas vezes** (o `.mp4` de ~33 MB mais um `-attachment.json` de ~44 MB com o mesmo conteúdo), ~264 MB extras por run no Android. Desligando, **não se perde vídeo** (o `afterTest` anexa o `.mp4`), nem os passos nomeados do `step()`, nem o stacktrace da falha — só a árvore de comandos WebDriver individuais dentro de cada passo. Se algum dia for preciso depurar comando a comando, ligue temporariamente e não commite.
-
 ### Allure steps in test spec
 
 Each method call in `test.spec.ts` is wrapped with a `step()` helper that calls `allure.startStep()` / `allure.endStep()`, making the report show meaningful step names (e.g. `homePage.ativarApp()`) with all WebDriver sub-calls nested inside. Em falha, o step é fechado com `Status.FAILED` e o erro é re-lançado.
