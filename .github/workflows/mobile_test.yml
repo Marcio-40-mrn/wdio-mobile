@@ -565,6 +565,9 @@ jobs:
     needs: [run-on-device-farm, run-ios-on-device-farm]
     runs-on: ubuntu-latest
     if: always()
+    # Rede de segurança: a publicação leva poucos minutos. Sem esse teto, um step que
+    # trave pendura o run por horas (já aconteceu: 4h05 num step de re-encode de vídeo).
+    timeout-minutes: 45
     permissions:
       contents: write
       # actions: write — necessário para apagar os artifacts das runs podadas
@@ -629,83 +632,11 @@ jobs:
             fi
           done
 
-      - name: Re-encode vídeos para H.264 (player do navegador)
-        if: always()
-        run: |
-          # Normaliza TODOS os .mp4 (Android e iOS) para H.264 + faststart com bitrate
-          # limitado e downscale, mantendo o mesmo nome (a referência no *-result.json
-          # continua válida). Motivos:
-          #  - iOS (Appium 1.x): grava em MJPEG (codec_tag mp4v), que o navegador não toca
-          #    em <video> — precisa virar h264.
-          #  - Android (MediaProjection): já é h264, MAS em resolução alta passava de 100MB
-          #    (limite por arquivo do GitHub) e era apagado no publish -> vídeo 404 no
-          #    relatório. Re-encodar com bitrate limitado + downscale garante <95MB.
-          # Por isso o re-encode é incondicional (antes pulava o que já era h264).
-          #
-          # NÃO usar `continue-on-error` aqui: com ele, o step morria no meio do apt-get
-          # (o ffmpeg NÃO vem no runner) e saía com exit 1 sem re-encodar nada, virando uma
-          # anotação escondida — 26s gastos e zero vídeo comprimido. Agora a falha de
-          # instalação vira ::error:: visível, a falha por arquivo mantém o original, e o
-          # step termina em 0 de propósito para não bloquear a publicação do relatório.
-          set -uo pipefail
-
-          if ! command -v ffmpeg >/dev/null 2>&1; then
-            for ATTEMPT in 1 2 3; do
-              echo "Instalando ffmpeg (tentativa $ATTEMPT/3)..."
-              sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg && break
-              sleep 5
-            done
-          fi
-          if ! ffmpeg -version >/dev/null 2>&1; then
-            echo "::error::ffmpeg indisponível após 3 tentativas — re-encode PULADO. Vídeos iOS não vão tocar no navegador e arquivos >95MB serão descartados no publish."
-            exit 0
-          fi
-
-          ENCONTRADOS=0
-          REENCODADOS=0
-          FALHAS=0
-          for PLAT in android ios; do
-            SRC="allure-results-$PLAT"
-            [ -d "$SRC" ] || continue
-            # -print0 / read -d '': nome com espaço ou newline não quebra o loop.
-            # Redirecionar com < <(...) em vez de `find | while` mantém os contadores no shell
-            # atual — num pipe o while roda em subshell e os totais voltariam zerados.
-            #
-            # A lista do find vai no FD 3 (3< / <&3), NÃO na stdin, e o ffmpeg leva -nostdin.
-            # Sem isso o step TRAVA: o ffmpeg sem -nostdin lê a stdin — que aqui é a saída do
-            # find — e, como os nomes de arquivo do Allure são UUIDs hexadecimais (quase sempre
-            # com um "c"), ele cai no handler interativo de teclado, imprime
-            # "Enter command: <target>|all <time>|-1 <command>" e fica bloqueado esperando o
-            # resto do comando. De quebra, engoliria a lista de arquivos e pularia vídeos.
-            while IFS= read -r -d '' f <&3; do
-              ENCONTRADOS=$((ENCONTRADOS+1))
-              codec=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 "$f" 2>/dev/null </dev/null)
-              antes=$(du -m "$f" | cut -f1)
-              # timeout: um .mp4 corrompido que trave o encoder vira warning por arquivo,
-              # não um job pendurado até o limite de 6h do Actions.
-              if timeout 600 ffmpeg -nostdin -y -loglevel error -i "$f" \
-                   -vf "scale=-2:'min(720,ih)'" \
-                   -c:v libx264 -crf 30 -preset veryfast -maxrate 1M -bufsize 2M \
-                   -pix_fmt yuv420p -an -movflags +faststart "${f}.tmp.mp4"; then
-                mv "${f}.tmp.mp4" "$f"
-                depois=$(du -m "$f" | cut -f1)
-                REENCODADOS=$((REENCODADOS+1))
-                echo "Re-encodado $f ($codec -> h264, ${antes}MB -> ${depois}MB)"
-              else
-                rm -f "${f}.tmp.mp4"
-                FALHAS=$((FALHAS+1))
-                echo "::warning::Falha ao re-encodar $f (codec $codec) — mantido original (${antes}MB)"
-              fi
-            done 3< <(find "$SRC" -name "*.mp4" -print0)
-          done
-
-          # Sem esse resumo, um no-op total (0 arquivos processados) é indistinguível de
-          # sucesso no log — foi exatamente assim que a quebra do step passou despercebida.
-          echo "Re-encode: $ENCONTRADOS vídeos encontrados, $REENCODADOS re-encodados, $FALHAS falhas"
-          if [ "$ENCONTRADOS" -eq 0 ]; then
-            echo "::warning::Nenhum .mp4 encontrado em allure-results-android/ios — nenhum device gravou vídeo."
-          fi
-          exit 0
+      # NÃO reintroduzir um step de re-encode de vídeo (ffmpeg) aqui. Ele nunca entregou
+      # nada: na primeira versão morria no apt-get sob continue-on-error (no-op silencioso)
+      # e, quando passou a rodar de verdade, o ffmpeg sem -nostdin lia a stdin do loop e
+      # travava no handler interativo ("Enter command: ..."), pendurando o run por 4h05.
+      # O .mp4 do Appium é publicado como está.
 
       - name: Generate Allure HTML reports per platform
         run: |
