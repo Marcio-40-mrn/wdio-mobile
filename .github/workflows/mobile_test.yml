@@ -670,11 +670,20 @@ jobs:
             # -print0 / read -d '': nome com espaço ou newline não quebra o loop.
             # Redirecionar com < <(...) em vez de `find | while` mantém os contadores no shell
             # atual — num pipe o while roda em subshell e os totais voltariam zerados.
-            while IFS= read -r -d '' f; do
+            #
+            # A lista do find vai no FD 3 (3< / <&3), NÃO na stdin, e o ffmpeg leva -nostdin.
+            # Sem isso o step TRAVA: o ffmpeg sem -nostdin lê a stdin — que aqui é a saída do
+            # find — e, como os nomes de arquivo do Allure são UUIDs hexadecimais (quase sempre
+            # com um "c"), ele cai no handler interativo de teclado, imprime
+            # "Enter command: <target>|all <time>|-1 <command>" e fica bloqueado esperando o
+            # resto do comando. De quebra, engoliria a lista de arquivos e pularia vídeos.
+            while IFS= read -r -d '' f <&3; do
               ENCONTRADOS=$((ENCONTRADOS+1))
-              codec=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 "$f" 2>/dev/null)
+              codec=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 "$f" 2>/dev/null </dev/null)
               antes=$(du -m "$f" | cut -f1)
-              if ffmpeg -y -loglevel error -i "$f" \
+              # timeout: um .mp4 corrompido que trave o encoder vira warning por arquivo,
+              # não um job pendurado até o limite de 6h do Actions.
+              if timeout 600 ffmpeg -nostdin -y -loglevel error -i "$f" \
                    -vf "scale=-2:'min(720,ih)'" \
                    -c:v libx264 -crf 30 -preset veryfast -maxrate 1M -bufsize 2M \
                    -pix_fmt yuv420p -an -movflags +faststart "${f}.tmp.mp4"; then
@@ -687,7 +696,7 @@ jobs:
                 FALHAS=$((FALHAS+1))
                 echo "::warning::Falha ao re-encodar $f (codec $codec) — mantido original (${antes}MB)"
               fi
-            done < <(find "$SRC" -name "*.mp4" -print0)
+            done 3< <(find "$SRC" -name "*.mp4" -print0)
           done
 
           # Sem esse resumo, um no-op total (0 arquivos processados) é indistinguível de
