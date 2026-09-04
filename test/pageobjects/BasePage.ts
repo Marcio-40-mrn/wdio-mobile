@@ -28,31 +28,83 @@ export class BasePage {
     return true;
   }
 
+  // Clica no primeiro seletor que estiver na tela. Existe porque um mesmo elemento pode ter
+  // accessibility id diferente entre versões do app (ex.: a aba de perfil da barra inferior,
+  // "Menu" na versão com ícone de mochila e "Perfil" na versão com ícone de sacola). Assim os
+  // dois ids ficam registrados e o teste usa o que a versão instalada expõe.
+  async clickFirstPresent(selectors: string[], timeout = this.defaultTimeout): Promise<string> {
+    const deadline = Date.now() + timeout;
+
+    do {
+      for (const selector of selectors) {
+        const el = await $(selector);
+        if (await el.isDisplayed().catch(() => false)) {
+          console.log(`✅ Seletor encontrado: ${selector}`);
+          await el.click();
+          await driver.pause(timewhait);
+          return selector;
+        }
+      }
+      await driver.pause(500);
+    } while (Date.now() < deadline);
+
+    throw new Error(`Nenhum dos seletores apareceu em ${timeout}ms: ${selectors.join(' | ')}`);
+  }
+
+  // Banner do Insider: o botão nativo closeBt é decorativo (clicar nele não fecha nada) e o
+  // back() do Android também não fecha. Quem fecha é o botão do próprio criativo, dentro da
+  // WebView, exposto como accessibility id "Close". A WebView leva alguns segundos para
+  // publicar a árvore de acessibilidade: antes disso o htmlView vem com NAF="true" e sem
+  // filhos, e o "Close" simplesmente não existe — por isso esperamos por ele em vez de
+  // consultar uma única vez. Nada de tocar em coordenada: o card tem "Open App" cobrindo a
+  // imagem e o CTA "Ver coleção", então um toque que erre o alvo navega para o promo.
   async fechaBanner() {
-  // Banner do Insider: a WebView (htmlView) não é debuggable e o botão nativo closeBt está
-  // DESALINHADO do "X" real (renderizado dentro da WebView, ~1 largura do closeBt à esquerda).
-  // Clicar no closeBt cai na WebView e ABRE o promo. Fechamos tocando na coordenada do "X",
-  // derivada dos bounds do closeBt (escala por device, pois o Appium lê os bounds reais).
-  const closeBt = await $("id:com.aramis.ecomm:id/closeBt");
-  if (!(await closeBt.isDisplayed().catch(() => false))) return;
+    const overlay = "id:com.aramis.ecomm:id/insiderLayout";
+    const botaoFechar = "accessibility id:Close";
 
-  const { x, y } = await closeBt.getLocation();
-  const { width, height } = await closeBt.getSize();
-  const tapX = Math.round(x - width);        // closeBt.left − largura → cai no "X"
-  const tapY = Math.round(y + height / 2);   // centro vertical do closeBt
+    for (let tentativa = 1; tentativa <= 3; tentativa++) {
+      // Sem banner na tela o método custa uma consulta e retorna: roda antes de todo step.
+      if (!(await this.bannerNaTela(overlay))) return;
 
-  await driver.performActions([{
-    type: 'pointer', id: 'finger1', parameters: { pointerType: 'touch' },
-    actions: [
-      { type: 'pointerMove', duration: 0, x: tapX, y: tapY },
-      { type: 'pointerDown', button: 0 },
-      { type: 'pointerUp', button: 0 },
-    ],
-  }]);
-  try { await driver.releaseActions(); } catch {}
+      const close = await $(botaoFechar);
+      const apareceu = await close
+        .waitForDisplayed({ timeout: 10000 })
+        .then(() => true)
+        .catch(() => false);
 
-  await driver.pause(timewhait);
-}
+      if (!apareceu) {
+        console.log(`⏳ Banner na tela mas o "Close" não apareceu (tentativa ${tentativa}/3)`);
+        continue;
+      }
+
+      await close.click();
+
+      const fechou = await driver
+        .waitUntil(async () => !(await this.bannerNaTela(overlay)), { timeout: 5000, interval: 500 })
+        .then(() => true)
+        .catch(() => false);
+
+      if (fechou) {
+        console.log(`✅ Banner fechado (tentativa ${tentativa}/3)`);
+        await driver.pause(timewhait);
+        // Não retorna: pode haver um segundo criativo enfileirado atrás do primeiro.
+        continue;
+      }
+
+      console.log(`⚠ Clique no "Close" não fechou o banner (tentativa ${tentativa}/3)`);
+    }
+
+    if (await this.bannerNaTela(overlay)) {
+      throw new Error('Banner do Insider não fechou após 3 tentativas de clicar em "Close"');
+    }
+  }
+
+  // Presença do banner pelo insiderLayout: o htmlView some do dump em alguns momentos mesmo
+  // com o banner visível na tela, então ele não serve de marcador.
+  private async bannerNaTela(overlay: string): Promise<boolean> {
+    const el = await $(overlay);
+    return el.isDisplayed().catch(() => false);
+  }
 
 
   async iniciaApp() {

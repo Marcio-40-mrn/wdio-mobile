@@ -34,31 +34,14 @@ jobs:
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
           EXPO_PROJECT_ID: ${{ secrets.EXPO_PROJECT_ID }}
-          # Todo build development do Android no EAS é .aab, então este passo SEMPRE roda a
-          # conversão AAB -> APK, que baixa o bundletool da api.github.com. Sem token, essa API
-          # tem cota de 60 req/h POR IP — e o IP do runner é compartilhado, então o 403 é comum.
-          # Autenticado, vai para 5000/h. (Localmente isso nunca aparece: o jar fica cacheado em
-          # scripts/, que é gitignored e portanto nunca existe no checkout do CI.)
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUILD_PROFILE_ANDROID: ${{ vars.BUILD_PROFILE_ANDROID }}
+          BUILD_SELECTION: ${{ vars.BUILD_SELECTION }}
+          BUILD_FROM: ${{ vars.BUILD_FROM }}
+          BUILD_TO: ${{ vars.BUILD_TO }}
         run: |
-          echo "::group::Ambiente da conversão AAB → APK"
-          java -version 2>&1 || echo "AVISO: java ausente — bundletool não roda"
-          df -h / | tail -1
-          echo "::endgroup::"
           node scripts/install-apk.mjs --no-install
-          ls -lh app.apk
           echo "APP_VERSION=$(jq -r '.appVersion' .build-info.json)" >> $GITHUB_ENV
           echo "APP_BUILD_VERSION=$(jq -r '.appBuildVersion' .build-info.json)" >> $GITHUB_ENV
-
-      # Guarda: sem esta checagem, uma falha na obtenção do APK só aparece lá na frente, no
-      # `curl -T`, com erro que não aponta a origem. Runs #47/#48 morreram antes daqui e o
-      # sintoma visível foi apenas "nenhuma run Android no Device Farm".
-      - name: Verify APK exists before upload
-        run: |
-          if [ ! -f app.apk ]; then
-            echo "::error::app.apk não foi gerado — a etapa 'Download APK from latest EAS Build' falhou (conversão AAB → APK). Nenhum upload será criado no Device Farm."
-            exit 1
-          fi
 
       # --- Upload APK para Device Farm ---
       - name: Create APK upload on Device Farm
@@ -72,21 +55,26 @@ jobs:
           echo "apk_arn=$(echo $RESPONSE | jq -r '.upload.arn')" >> $GITHUB_OUTPUT
           echo "apk_url=$(echo $RESPONSE | jq -r '.upload.url')" >> $GITHUB_OUTPUT
 
-      # --- Instalar deps para empacotar no ZIP ---
-      # node_modules vai pronto no test package → o Device Farm NÃO roda npm install por device
-      # (maior custo repetido do pre_test). Seguro no Android: no Device Farm o WDIO só conecta no
-      # Appium já provido (buildServices()=[]), então node_modules é só o runner WDIO/ts-node (JS puro).
-      - name: Install dependencies (bundled into test package)
-        run: npm ci
+      - name: Upload APK to Device Farm S3
+        run: curl -T app.apk "${{ steps.apk_upload.outputs.apk_url }}"
 
-      # --- Criar ZIP do test package (inclui node_modules já instalado) ---
-      # -y (--symlinks): preserva os symlinks do node_modules. Sem isso, o zip achata
-      # node_modules/.bin/wdio (symlink -> ../@wdio/cli/bin/wdio.js) num arquivo comum, e o
-      # `import('../build/index.js')` do bin passa a resolver p/ node_modules/build/index.js
-      # (inexistente) -> ERR_MODULE_NOT_FOUND, WDIO quebra antes do onPrepare, relatório vazio.
+      - name: Wait for APK upload to succeed
+        run: |
+          ARN="${{ steps.apk_upload.outputs.apk_arn }}"
+          for i in $(seq 1 20); do
+            STATUS=$(aws devicefarm get-upload --arn "$ARN" --region us-west-2 | jq -r '.upload.status')
+            echo "APK upload status ($i/20): $STATUS"
+            if [ "$STATUS" = "SUCCEEDED" ]; then exit 0; fi
+            if [ "$STATUS" = "FAILED" ]; then echo "APK upload falhou"; exit 1; fi
+            sleep 10
+          done
+          echo "Timeout aguardando upload do APK"; exit 1
+
+      # --- Criar ZIP do test package ---
       - name: Create test package ZIP
         run: |
-          zip -ryq test-package.zip . \
+          zip -r test-package.zip . \
+            --exclude "node_modules/*" \
             --exclude ".git/*" \
             --exclude "allure-results/*" \
             --exclude "allure-report/*" \
@@ -107,6 +95,21 @@ jobs:
           echo "test_arn=$(echo $RESPONSE | jq -r '.upload.arn')" >> $GITHUB_OUTPUT
           echo "test_url=$(echo $RESPONSE | jq -r '.upload.url')" >> $GITHUB_OUTPUT
 
+      - name: Upload test package to Device Farm S3
+        run: curl -T test-package.zip "${{ steps.test_upload.outputs.test_url }}"
+
+      - name: Wait for test package upload to succeed
+        run: |
+          ARN="${{ steps.test_upload.outputs.test_arn }}"
+          for i in $(seq 1 30); do
+            STATUS=$(aws devicefarm get-upload --arn "$ARN" --region us-west-2 | jq -r '.upload.status')
+            echo "Test package upload status ($i/30): $STATUS"
+            if [ "$STATUS" = "SUCCEEDED" ]; then exit 0; fi
+            if [ "$STATUS" = "FAILED" ]; then echo "Test package upload falhou"; exit 1; fi
+            sleep 15
+          done
+          echo "Timeout aguardando upload do test package"; exit 1
+
       # --- Upload testspec ---
       - name: Create testspec upload on Device Farm
         id: testspec_upload
@@ -119,39 +122,20 @@ jobs:
           echo "spec_arn=$(echo $RESPONSE | jq -r '.upload.arn')" >> $GITHUB_OUTPUT
           echo "spec_url=$(echo $RESPONSE | jq -r '.upload.url')" >> $GITHUB_OUTPUT
 
-      # --- Upload dos 3 artefatos em paralelo + espera combinada ---
-      # Antes: 3 blocos sequenciais (APK -> test package -> testspec), cada um com curl + loop de
-      # polling. Agora os 3 curls sobem juntos e um unico loop espera os 3 status, economizando a
-      # soma dos tempos de processamento no S3/Device Farm.
-      - name: Upload all artifacts to Device Farm S3 (parallel)
-        run: |
-          curl -T app.apk "${{ steps.apk_upload.outputs.apk_url }}" & PID_APK=$!
-          curl -T test-package.zip "${{ steps.test_upload.outputs.test_url }}" & PID_TEST=$!
-          curl -T testspec.yml "${{ steps.testspec_upload.outputs.spec_url }}" & PID_SPEC=$!
-          FAIL=0
-          wait $PID_APK || FAIL=1
-          wait $PID_TEST || FAIL=1
-          wait $PID_SPEC || FAIL=1
-          if [ "$FAIL" != "0" ]; then echo "Falha no upload S3 de um dos artefatos"; exit 1; fi
+      - name: Upload testspec to Device Farm S3
+        run: curl -T testspec.yml "${{ steps.testspec_upload.outputs.spec_url }}"
 
-      - name: Wait for all uploads to succeed
+      - name: Wait for testspec upload to succeed
         run: |
-          APK_ARN="${{ steps.apk_upload.outputs.apk_arn }}"
-          TEST_ARN="${{ steps.test_upload.outputs.test_arn }}"
-          SPEC_ARN="${{ steps.testspec_upload.outputs.spec_arn }}"
-          status() { aws devicefarm get-upload --arn "$1" --region us-west-2 | jq -r '.upload.status'; }
-          for i in $(seq 1 90); do
-            SA=$(status "$APK_ARN"); ST=$(status "$TEST_ARN"); SS=$(status "$SPEC_ARN")
-            echo "Uploads ($i/90): APK=$SA TEST=$ST SPEC=$SS"
-            for S in "$SA" "$ST" "$SS"; do
-              [ "$S" = "FAILED" ] && { echo "Upload falhou"; exit 1; }
-            done
-            if [ "$SA" = "SUCCEEDED" ] && [ "$ST" = "SUCCEEDED" ] && [ "$SS" = "SUCCEEDED" ]; then
-              echo "Todos os uploads concluidos"; exit 0
-            fi
+          ARN="${{ steps.testspec_upload.outputs.spec_arn }}"
+          for i in $(seq 1 10); do
+            STATUS=$(aws devicefarm get-upload --arn "$ARN" --region us-west-2 | jq -r '.upload.status')
+            echo "Testspec upload status ($i/10): $STATUS"
+            if [ "$STATUS" = "SUCCEEDED" ]; then exit 0; fi
+            if [ "$STATUS" = "FAILED" ]; then echo "Testspec upload falhou"; exit 1; fi
             sleep 5
           done
-          echo "Timeout aguardando uploads"; exit 1
+          echo "Timeout aguardando upload do testspec"; exit 1
 
       # --- Agendar run no Device Farm ---
       - name: Schedule Device Farm run
@@ -182,17 +166,17 @@ jobs:
           STATUS=""
           RESULT_VAL=""
           REACHED_TERMINAL=false
-          for i in $(seq 1 360); do
+          for i in $(seq 1 120); do
             RESULT=$(aws devicefarm get-run --arn "$ARN" --region us-west-2 | jq -r '.run | "\(.status) \(.result)"')
             STATUS=$(echo $RESULT | cut -d' ' -f1)
             RESULT_VAL=$(echo $RESULT | cut -d' ' -f2)
-            echo "Status ($i/360): $STATUS / $RESULT_VAL"
+            echo "Status ($i/120): $STATUS / $RESULT_VAL"
             if [ "$STATUS" != "PENDING" ] && [ "$STATUS" != "RUNNING" ] && [ "$STATUS" != "SCHEDULING" ]; then
               echo "Run concluído com resultado: $RESULT_VAL"
               REACHED_TERMINAL=true
               break
             fi
-            sleep 20
+            sleep 60
           done
           # Timeout sem estado terminal = falha real de automação (esteira travou) -> quebra.
           if [ "$REACHED_TERMINAL" != "true" ]; then
@@ -213,30 +197,15 @@ jobs:
           # O relatório junta TODOS os devices: baixa o "Customer Artifacts" (zip com o
           # allure-results, incl. vídeo) da Tests Suite de CADA device do run. Cada resultado
           # já carrega o rótulo do aparelho/conta (test.spec.ts) para a navegação por device.
-          #
-          # O mesmo loop monta a tabela de resultado POR APARELHO no Step Summary. O agregado que
-          # o console do Device Farm mostra engana: ele conta 3 "testes" por device porque o
-          # próprio Device Farm cria as suites Setup e Teardown em volta da Tests Suite — num run
-          # em que TODOS os devices falharam, o painel ainda exibe 2/3 "passed" por aparelho. Aqui
-          # sai só o resultado da Tests Suite, que é o teste de verdade. Sem chamada extra à AWS:
-          # o list-tests já era feito para achar o artefato.
-          RESUMO=""
           i=0
           for JOB_ARN in $(aws devicefarm list-jobs --arn "$RUN_ARN" --region us-west-2 | jq -r '.jobs[].arn'); do
             NAME=$(aws devicefarm get-job --arn "$JOB_ARN" --region us-west-2 | jq -r '.job.device.name')
             SUITE_ARN=$(aws devicefarm list-suites --arn "$JOB_ARN" --region us-west-2 \
               | jq -r '.suites[] | select(.name=="Tests Suite") | .arn')
             if [ -z "$SUITE_ARN" ] || [ "$SUITE_ARN" = "null" ]; then
-              echo "Sem Tests Suite (pulando): $NAME"
-              RESUMO="$RESUMO| $NAME | — | não executou (sem Tests Suite) |\n"
-              i=$((i+1)); continue
+              echo "Sem Tests Suite (pulando): $NAME"; i=$((i+1)); continue
             fi
-            TESTS_JSON=$(aws devicefarm list-tests --arn "$SUITE_ARN" --region us-west-2)
-            TEST_ARN=$(echo "$TESTS_JSON" | jq -r '.tests[0].arn')
-            # tr/cut: mensagem com "|" quebraria a linha da tabela markdown.
-            TEST_RESULT=$(echo "$TESTS_JSON" | jq -r '.tests[0].result // "?"')
-            TEST_MSG=$(echo "$TESTS_JSON" | jq -r '.tests[0].message // "—"' | tr '|' '/' | cut -c1-120)
-            RESUMO="$RESUMO| $NAME | $TEST_RESULT | $TEST_MSG |\n"
+            TEST_ARN=$(aws devicefarm list-tests --arn "$SUITE_ARN" --region us-west-2 | jq -r '.tests[0].arn')
             URL=$(aws devicefarm list-artifacts --arn "$TEST_ARN" --type FILE --region us-west-2 \
               | jq -r '.artifacts[] | select(.name=="Customer Artifacts") | .url')
             if [ -n "$URL" ] && [ "$URL" != "null" ]; then
@@ -247,18 +216,6 @@ jobs:
             fi
             i=$((i+1))
           done
-
-          if [ -n "$RESUMO" ]; then
-            {
-              echo "### Android — resultado por aparelho"
-              echo ""
-              echo "| Device | Teste | Detalhe |"
-              echo "|---|---|---|"
-              printf "%b" "$RESUMO"
-            } >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "**Android:** nenhum device retornou job — o run não chegou a existir." >> "$GITHUB_STEP_SUMMARY"
-          fi
 
           echo "Artifacts baixados: $(ls artifacts/ | wc -l) arquivos"
           ls -la artifacts/
@@ -332,6 +289,10 @@ jobs:
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
           EXPO_PROJECT_ID: ${{ secrets.EXPO_PROJECT_ID }}
+          BUILD_PROFILE_IOS: ${{ vars.BUILD_PROFILE_IOS }}
+          BUILD_SELECTION: ${{ vars.BUILD_SELECTION }}
+          BUILD_FROM: ${{ vars.BUILD_FROM }}
+          BUILD_TO: ${{ vars.BUILD_TO }}
         run: |
           node scripts/install-apk.mjs --no-install --platform ios
           echo "APP_VERSION=$(jq -r '.appVersion' .build-info.json)" >> $GITHUB_ENV
@@ -348,6 +309,21 @@ jobs:
             --region us-west-2)
           echo "ipa_arn=$(echo $RESPONSE | jq -r '.upload.arn')" >> $GITHUB_OUTPUT
           echo "ipa_url=$(echo $RESPONSE | jq -r '.upload.url')" >> $GITHUB_OUTPUT
+
+      - name: Upload IPA to Device Farm S3
+        run: curl -T app.ipa "${{ steps.ipa_upload.outputs.ipa_url }}"
+
+      - name: Wait for IPA upload to succeed
+        run: |
+          ARN="${{ steps.ipa_upload.outputs.ipa_arn }}"
+          for i in $(seq 1 20); do
+            STATUS=$(aws devicefarm get-upload --arn "$ARN" --region us-west-2 | jq -r '.upload.status')
+            echo "IPA upload status ($i/20): $STATUS"
+            if [ "$STATUS" = "SUCCEEDED" ]; then exit 0; fi
+            if [ "$STATUS" = "FAILED" ]; then echo "IPA upload falhou"; exit 1; fi
+            sleep 10
+          done
+          echo "Timeout aguardando upload do IPA"; exit 1
 
       # --- Criar ZIP do test package ---
       - name: Create test package ZIP
@@ -374,6 +350,21 @@ jobs:
           echo "test_arn=$(echo $RESPONSE | jq -r '.upload.arn')" >> $GITHUB_OUTPUT
           echo "test_url=$(echo $RESPONSE | jq -r '.upload.url')" >> $GITHUB_OUTPUT
 
+      - name: Upload test package to Device Farm S3
+        run: curl -T test-package.zip "${{ steps.test_upload_ios.outputs.test_url }}"
+
+      - name: Wait for test package upload to succeed
+        run: |
+          ARN="${{ steps.test_upload_ios.outputs.test_arn }}"
+          for i in $(seq 1 30); do
+            STATUS=$(aws devicefarm get-upload --arn "$ARN" --region us-west-2 | jq -r '.upload.status')
+            echo "Test package upload status ($i/30): $STATUS"
+            if [ "$STATUS" = "SUCCEEDED" ]; then exit 0; fi
+            if [ "$STATUS" = "FAILED" ]; then echo "Test package upload falhou"; exit 1; fi
+            sleep 15
+          done
+          echo "Timeout aguardando upload do test package"; exit 1
+
       # --- Upload testspec ---
       - name: Create testspec upload on Device Farm
         id: testspec_upload_ios
@@ -386,36 +377,20 @@ jobs:
           echo "spec_arn=$(echo $RESPONSE | jq -r '.upload.arn')" >> $GITHUB_OUTPUT
           echo "spec_url=$(echo $RESPONSE | jq -r '.upload.url')" >> $GITHUB_OUTPUT
 
-      # --- Upload dos 3 artefatos em paralelo + espera combinada (mesma otimizacao do job Android) ---
-      - name: Upload all artifacts to Device Farm S3 (parallel)
-        run: |
-          curl -T app.ipa "${{ steps.ipa_upload.outputs.ipa_url }}" & PID_IPA=$!
-          curl -T test-package.zip "${{ steps.test_upload_ios.outputs.test_url }}" & PID_TEST=$!
-          curl -T testspec-ios.yml "${{ steps.testspec_upload_ios.outputs.spec_url }}" & PID_SPEC=$!
-          FAIL=0
-          wait $PID_IPA || FAIL=1
-          wait $PID_TEST || FAIL=1
-          wait $PID_SPEC || FAIL=1
-          if [ "$FAIL" != "0" ]; then echo "Falha no upload S3 de um dos artefatos"; exit 1; fi
+      - name: Upload testspec to Device Farm S3
+        run: curl -T testspec-ios.yml "${{ steps.testspec_upload_ios.outputs.spec_url }}"
 
-      - name: Wait for all uploads to succeed
+      - name: Wait for testspec upload to succeed
         run: |
-          IPA_ARN="${{ steps.ipa_upload.outputs.ipa_arn }}"
-          TEST_ARN="${{ steps.test_upload_ios.outputs.test_arn }}"
-          SPEC_ARN="${{ steps.testspec_upload_ios.outputs.spec_arn }}"
-          status() { aws devicefarm get-upload --arn "$1" --region us-west-2 | jq -r '.upload.status'; }
-          for i in $(seq 1 90); do
-            SA=$(status "$IPA_ARN"); ST=$(status "$TEST_ARN"); SS=$(status "$SPEC_ARN")
-            echo "Uploads ($i/90): IPA=$SA TEST=$ST SPEC=$SS"
-            for S in "$SA" "$ST" "$SS"; do
-              [ "$S" = "FAILED" ] && { echo "Upload falhou"; exit 1; }
-            done
-            if [ "$SA" = "SUCCEEDED" ] && [ "$ST" = "SUCCEEDED" ] && [ "$SS" = "SUCCEEDED" ]; then
-              echo "Todos os uploads concluidos"; exit 0
-            fi
+          ARN="${{ steps.testspec_upload_ios.outputs.spec_arn }}"
+          for i in $(seq 1 10); do
+            STATUS=$(aws devicefarm get-upload --arn "$ARN" --region us-west-2 | jq -r '.upload.status')
+            echo "Testspec upload status ($i/10): $STATUS"
+            if [ "$STATUS" = "SUCCEEDED" ]; then exit 0; fi
+            if [ "$STATUS" = "FAILED" ]; then echo "Testspec upload falhou"; exit 1; fi
             sleep 5
           done
-          echo "Timeout aguardando uploads"; exit 1
+          echo "Timeout aguardando upload do testspec"; exit 1
 
       # --- Agendar run iOS ---
       - name: Schedule iOS Device Farm run
@@ -446,11 +421,11 @@ jobs:
           STATUS=""
           RESULT_VAL=""
           REACHED_TERMINAL=false
-          for i in $(seq 1 360); do
+          for i in $(seq 1 120); do
             RESULT=$(aws devicefarm get-run --arn "$ARN" --region us-west-2 | jq -r '.run | "\(.status) \(.result)"')
             STATUS=$(echo $RESULT | cut -d' ' -f1)
             RESULT_VAL=$(echo $RESULT | cut -d' ' -f2)
-            echo "Status ($i/360): $STATUS / $RESULT_VAL"
+            echo "Status ($i/120): $STATUS / $RESULT_VAL"
             if [ "$STATUS" != "PENDING" ] && [ "$STATUS" != "RUNNING" ] && [ "$STATUS" != "SCHEDULING" ]; then
               echo "Run iOS concluído com resultado: $RESULT_VAL"
               REACHED_TERMINAL=true
@@ -477,24 +452,15 @@ jobs:
           # Mesma regra do Android: junta TODOS os devices no relatório — baixa o "Customer
           # Artifacts" da Tests Suite de cada aparelho. (Enquanto o fluxo iOS não passar no
           # onboarding, os resultados vêm com falha, mas cada device ainda aparece navegável.)
-          # E, como no Android, o loop também monta a tabela por aparelho no Step Summary — o
-          # agregado do console conta as suites Setup/Teardown e mascara a falha real.
-          RESUMO=""
           i=0
           for JOB_ARN in $(aws devicefarm list-jobs --arn "$RUN_ARN" --region us-west-2 | jq -r '.jobs[].arn'); do
             NAME=$(aws devicefarm get-job --arn "$JOB_ARN" --region us-west-2 | jq -r '.job.device.name')
             SUITE_ARN=$(aws devicefarm list-suites --arn "$JOB_ARN" --region us-west-2 \
               | jq -r '.suites[] | select(.name=="Tests Suite") | .arn')
             if [ -z "$SUITE_ARN" ] || [ "$SUITE_ARN" = "null" ]; then
-              echo "Sem Tests Suite (pulando): $NAME"
-              RESUMO="$RESUMO| $NAME | — | não executou (sem Tests Suite) |\n"
-              i=$((i+1)); continue
+              echo "Sem Tests Suite (pulando): $NAME"; i=$((i+1)); continue
             fi
-            TESTS_JSON=$(aws devicefarm list-tests --arn "$SUITE_ARN" --region us-west-2)
-            TEST_ARN=$(echo "$TESTS_JSON" | jq -r '.tests[0].arn')
-            TEST_RESULT=$(echo "$TESTS_JSON" | jq -r '.tests[0].result // "?"')
-            TEST_MSG=$(echo "$TESTS_JSON" | jq -r '.tests[0].message // "—"' | tr '|' '/' | cut -c1-120)
-            RESUMO="$RESUMO| $NAME | $TEST_RESULT | $TEST_MSG |\n"
+            TEST_ARN=$(aws devicefarm list-tests --arn "$SUITE_ARN" --region us-west-2 | jq -r '.tests[0].arn')
             URL=$(aws devicefarm list-artifacts --arn "$TEST_ARN" --type FILE --region us-west-2 \
               | jq -r '.artifacts[] | select(.name=="Customer Artifacts") | .url')
             if [ -n "$URL" ] && [ "$URL" != "null" ]; then
@@ -505,19 +471,6 @@ jobs:
             fi
             i=$((i+1))
           done
-
-          if [ -n "$RESUMO" ]; then
-            {
-              echo "### iOS — resultado por aparelho"
-              echo ""
-              echo "| Device | Teste | Detalhe |"
-              echo "|---|---|---|"
-              printf "%b" "$RESUMO"
-            } >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "**iOS:** nenhum device retornou job — o run não chegou a existir." >> "$GITHUB_STEP_SUMMARY"
-          fi
-
           echo "Artifacts iOS baixados: $(ls artifacts/ | wc -l) arquivos"
 
       - name: Upload raw iOS Device Farm artifacts (debug)
@@ -566,17 +519,17 @@ jobs:
     runs-on: ubuntu-latest
     if: always()
     # Rede de segurança: a publicação leva poucos minutos. Sem esse teto, um step que
-    # trave pendura o run por horas (já aconteceu: 4h05 num step de re-encode de vídeo).
+    # trave pendura o run por horas (já aconteceu num step de re-encode de vídeo).
     timeout-minutes: 45
     permissions:
       contents: write
-      # actions: write — necessário para apagar os artifacts das runs podadas
-      # (step "Apagar artifacts das runs podadas").
-      actions: write
     # Serializa publicações de runs sobrepostas para evitar corrida de push na branch reports.
     concurrency:
       group: reports-publish
       cancel-in-progress: false
+    # Quantas execuções ficam publicadas na branch reports (as N mais recentes).
+    env:
+      REPORTS_KEEP: 3
 
     steps:
       - name: Checkout main (para ter os scripts)
@@ -634,17 +587,18 @@ jobs:
 
       # NÃO reintroduzir um step de re-encode de vídeo (ffmpeg) aqui. Ele nunca entregou
       # nada: na primeira versão morria no apt-get sob continue-on-error (no-op silencioso)
-      # e, quando passou a rodar de verdade, o ffmpeg sem -nostdin lia a stdin do loop e
-      # travava no handler interativo ("Enter command: ..."), pendurando o run por 4h05.
-      # O .mp4 do Appium é publicado como está.
+      # e, quando passou a rodar de verdade, o ffmpeg sem -nostdin lia a stdin do loop
+      # `find ... | while read` e travava no handler interativo ("Enter command: ..."),
+      # pendurando o run por horas. O .mp4 do Appium é publicado como está: o Android grava
+      # em H.264 via MediaProjection, que o navegador toca nativamente.
 
       - name: Generate Allure HTML reports per platform
         run: |
           # "Tem resultado" = existe pelo menos um *-result.json. Diretório não-vazio não serve
           # como critério: um job que falhou antes do Device Farm ainda deixa a pasta com os
-          # arquivos fixos (environment.properties/categories.json), e o Allure gera dali um
-          # relatório de 0 testes — indistinguível de "rodou e não achou nada". Foi o que
-          # aconteceu nos runs #44, #45, #47 e #48 do Android.
+          # arquivos fixos (environment.properties/categories.json) e o history/ copiado acima,
+          # e o Allure gera dali um relatório de 0 testes — que era publicado e consumia um
+          # slot da retenção, derrubando um relatório real.
           for PLAT in android ios; do
             SRC="allure-results-$PLAT"
             COUNT=$(find "$SRC" -name '*-result.json' 2>/dev/null | wc -l)
@@ -694,23 +648,17 @@ jobs:
         if: always()
         run: |
           RUN_DIR="run-${{ github.run_number }}-$(date -u +%Y-%m-%d)"
-
-          # Quantas execuções a branch `reports` mantém. Único lugar para mudar a retenção.
-          # Com 3 runs a branch fica em ~330MB, dentro do teto de 1GB de site publicado do Pages.
-          KEEP=3
-
-          # Números das runs podadas nesta publicação, um por linha. Fica FORA de
-          # reports-branch de propósito (senão seria commitado junto). O step
-          # "Apagar artifacts das runs podadas" lê daqui.
-          PRUNED_LIST="$GITHUB_WORKSPACE/pruned-runs.txt"
-          : > "$PRUNED_LIST"
+          KEEP="$REPORTS_KEEP"
 
           # --- Guarda: nada gerado -> não publica, mas explica claramente o motivo ---
           if [ ! -d "allure-report-android" ] && [ ! -d "allure-report-ios" ]; then
             MSG="Device Farm não retornou allure-results (Android nem iOS) — relatório não publicado nesta run."
-            echo "::warning::$MSG"
+            echo "::error::$MSG"
             echo "**Publicação:** $MSG" >> "$GITHUB_STEP_SUMMARY"
-            exit 0
+            # exit 1, não 0: sem resultado o relatório do Pages para de ser atualizado, e um
+            # job verde esconde isso (foi o que aconteceu no run-22, 2026-09-01 — a quebra só
+            # apareceu quando alguém abriu o log). Falhar aqui deixa o run vermelho na hora.
+            exit 1
           fi
 
           cd reports-branch
@@ -732,13 +680,10 @@ jobs:
             done
           }
 
-          # Mantém só os $KEEP runs mais recentes; apaga o resto do disco e registra o
-          # número de cada run removida em $PRUNED_LIST. Roda DEPOIS da cópia e ANTES do
-          # generate-report-index.mjs, para o índice já sair com as pastas finais.
-          # `sort -V` é o mesmo critério do step "Copy Allure history per platform" e
-          # ordena run-49 antes de run-100 (comparação numérica, não lexicográfica).
+          # Mantém apenas as $KEEP execuções mais recentes. A run atual é sempre a de maior
+          # número, então nunca é podada. `find -printf` não depende de glob (sem diretório
+          # o padrão viraria o literal "run-*/") e `sort -V` ordena run-49 antes de run-100.
           prune_old_runs() {
-            : > "$PRUNED_LIST"
             local DIRS
             DIRS=$(find . -maxdepth 1 -type d -name 'run-*' -printf '%f\n' | sort -V | head -n -"$KEEP")
             if [ -z "$DIRS" ]; then
@@ -747,12 +692,15 @@ jobs:
             fi
             while IFS= read -r d; do
               [ -z "$d" ] && continue
-              echo "Podando run antigo: $d"
+              echo "Removendo run antigo: $d"
               rm -rf "$d"
-              printf '%s\n' "$d" | sed 's/^run-\([0-9]*\)-.*/\1/' >> "$PRUNED_LIST"
             done <<< "$DIRS"
           }
 
+          # A branch reports é recriada a cada publicação como UM commit órfão com
+          # apenas as $KEEP execuções mais recentes. Só apagar os runs antigos
+          # não devolveria espaço: os vídeos continuariam no histórico e o repositório
+          # seguiria crescendo ~1GB por execução.
           n=0
           while true; do
             # Árvore atualmente publicada, para detectar "nada mudou" (ver abaixo).
@@ -766,29 +714,22 @@ jobs:
             # é apagado e o git seguinte falha com "fatal: could not parse HEAD".
             find . -path './.git' -prune -o -type f -size +95M -print0 | xargs -0 -r rm -f
 
-            # Commit ÓRFÃO + push --force: a branch é RECRIADA a cada publicação, com 1
-            # commit só contendo os $KEEP runs mantidos. Um `git rm` num commit normal
-            # limparia a tabela, mas os blobs (vídeos) continuariam no histórico — o
-            # repositório não encolheria e o checkout no CI seguiria lento.
+            # --orphan descarta o histórico (e os vídeos já podados) da branch.
             git checkout -q --orphan "publish-$n"
             git add -A
-            git commit -q -m "Relatório: $RUN_DIR (mantendo os últimos $KEEP runs)"
+            git commit -q -m "Relatório: $RUN_DIR (últimos $KEEP runs)"
 
-            # Num commit órfão `git diff --staged` nunca fica vazio (não há pai), por isso
-            # a comparação de "nada novo" é feita pelo hash da árvore.
+            # Num commit órfão não há pai, então `git status`/`git diff --staged` nunca
+            # ficam vazios. A comparação de "nada novo" é feita pelo hash da árvore.
             if [ "$(git rev-parse HEAD^{tree})" = "$OLD_TREE" ]; then
               echo "Árvore idêntica à já publicada — nada novo para publicar."
               echo "**Publicação:** nada novo para publicar nesta run." >> "$GITHUB_STEP_SUMMARY"
-              : > "$PRUNED_LIST"
               exit 0
             fi
 
             if git push --force origin HEAD:reports; then
               echo "Relatório publicado com sucesso."
-              echo "**Publicação:** relatório \`$RUN_DIR\` publicado na branch reports (retenção: $KEEP runs)." >> "$GITHUB_STEP_SUMMARY"
-              if [ -s "$PRUNED_LIST" ]; then
-                echo "**Runs podados:** $(tr '\n' ' ' < "$PRUNED_LIST")" >> "$GITHUB_STEP_SUMMARY"
-              fi
+              echo "**Publicação:** relatório \`$RUN_DIR\` publicado na branch reports (mantidos os $KEEP mais recentes)." >> "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
 
@@ -796,58 +737,15 @@ jobs:
             if [ "$n" -ge 5 ]; then
               echo "::error::Falha ao publicar o relatório após 5 tentativas (push rejeitado pelo remoto)."
               echo "**Publicação:** FALHOU após 5 tentativas de push na branch reports." >> "$GITHUB_STEP_SUMMARY"
-              # A poda não chegou ao remoto: não deixar o step seguinte apagar artifacts.
-              : > "$PRUNED_LIST"
               exit 1
             fi
-            echo "Push rejeitado — re-sincronizando com o remoto (tentativa $n/5)"
+            echo "Push rejeitado (corrida com outra run) — re-sincronizando com o remoto (tentativa $n/5)"
             git fetch --depth 1 origin reports
             git reset --hard FETCH_HEAD
+            # Sem o clean, arquivos não rastreados da tentativa anterior sobrevivem ao
+            # reset e sujam a árvore da tentativa seguinte.
             git clean -fdq
           done
-
-      - name: Apagar artifacts das runs podadas
-        if: always()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # Ao remover run-N-DATA/ da branch reports, os artifacts daquela run no GitHub
-          # ficam órfãos (o relatório navegável já não existe). Apaga por NOME EXATO — os
-          # seis nomes que o workflow publica por run. Falha aqui nunca derruba o job: o
-          # relatório já foi publicado e os artifacts têm retention-days: 30 de qualquer forma.
-          set -uo pipefail
-          PRUNED_LIST="$GITHUB_WORKSPACE/pruned-runs.txt"
-          if [ ! -s "$PRUNED_LIST" ]; then
-            echo "Nenhum run podado nesta publicação — nada a apagar."
-            exit 0
-          fi
-
-          ALL=$(gh api "repos/${{ github.repository }}/actions/artifacts" --paginate -q '.artifacts[] | "\(.id) \(.name)"' 2>/dev/null || true)
-          if [ -z "$ALL" ]; then
-            echo "::warning::Não foi possível listar os artifacts do repositório — nada apagado."
-            exit 0
-          fi
-
-          TOTAL=0
-          while IFS= read -r N; do
-            [ -z "$N" ] && continue
-            for NAME in "devicefarm-raw-android-$N" "allure-results-$N" \
-                        "devicefarm-raw-ios-$N" "allure-results-ios-$N" \
-                        "allure-report-android-$N" "allure-report-ios-$N"; do
-              while IFS=' ' read -r ID ANAME; do
-                [ "$ANAME" = "$NAME" ] || continue
-                if gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$ID" >/dev/null 2>&1; then
-                  echo "Apagado: $ANAME (id $ID)"
-                  TOTAL=$((TOTAL+1))
-                else
-                  echo "::warning::Falha ao apagar o artifact $ANAME (id $ID)"
-                fi
-              done <<< "$ALL"
-            done
-          done < "$PRUNED_LIST"
-
-          echo "$TOTAL artifact(s) apagado(s) das runs podadas: $(tr '\n' ' ' < "$PRUNED_LIST")"
-          exit 0
 
       - name: Print report URL
         run: |

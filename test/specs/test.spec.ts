@@ -40,6 +40,10 @@ describe('Teste Login e Perfil', () => {
 
         const { user, password } = getCredentials();
 
+        // O nome sai da tela em runtime: o teste favorita a primeira camisa que a lista
+        // mostrar, e a validação nos favoritos precisa procurar exatamente esse item.
+        let produtoFavoritado = '';
+
         // Habilita a limpeza automática do banner antes de cada step (ver comentário acima).
         closeBannerIfPresent = () => homePage.fechaBanner();
 
@@ -67,15 +71,15 @@ describe('Teste Login e Perfil', () => {
 
         await step('categoriaPage.clickRoupas()', () => categoriaPage.clickRoupas());
         await step('categoriaPage.abrirCamisetas()', () => categoriaPage.abrirCamisas());
-        await step('categoriaPage.selecionarProduto()', () => categoriaPage.selecionarProduto("Camisa Manga Longa Slim Poliviscose de Bambu Stretch Branco"));
-        await step('categoriaPage.adicionarItemFavoritos()', () => categoriaPage.adicionarItemFavoritos());
-        await step('categoriaPage.voltar() - página do produto', () => categoriaPage.voltar());
+        await step('categoriaPage.favoritarPrimeiroProduto()', async () => {produtoFavoritado = await categoriaPage.favoritarPrimeiroProduto();});
+        // Um voltar() só: favoritando na listagem, esta é a única tela a sair para chegar em
+        // categorias, que é onde a aba Perfil existe (a listagem não tem tab-* nenhum).
         await step('categoriaPage.voltar() - categoria', () => categoriaPage.voltar());
 
         await step('homePage.abrirPerfil()', () => homePage.abrirPerfil());
         await step('perfilPage.abrirFavoritos()', () => perfilPage.abrirFavoritos());
 
-        await step('favoritosPage.validaElememnto()', () => favoritosPage.validaElememnto("Camisa Manga Longa Slim Poliviscose de Bambu Stretch Branco"));
+        await step('favoritosPage.validaElememnto()', () => favoritosPage.validaElememnto(produtoFavoritado));
         await step('favoritosPage.tirarSelecaoItem()', () => favoritosPage.tirarSelecaoItem());
 
         await step('categoriaPage.voltar()', () => categoriaPage.voltar());

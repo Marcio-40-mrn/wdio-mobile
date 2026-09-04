@@ -104,6 +104,12 @@ function buildConnectionSettings(): object {
     return {};
 }
 
+// O serviço 'appium' abaixo só sobe na execução LOCAL contra o AVD-S24. No Device Farm e no
+// modo remoto ele é desligado: o Appium é o do host, iniciado pelo testspec.yml.
+// Por isso os pacotes `appium` / `appium-uiautomator2-driver` do package.json não têm efeito
+// nenhum no CI — e um deles é ativamente perigoso: declarar "appium" no package.json faz o
+// Appium do host autodetectar o diretório do projeto como APPIUM_HOME e perder os drivers
+// pré-instalados. Foi o que quebrou o run-22 (2026-09-01). Detalhes no testspec.yml.
 function buildServices(): object[] {
     if (isDeviceFarm || isRemote) return [];
     return [

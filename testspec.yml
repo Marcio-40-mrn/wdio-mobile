@@ -12,9 +12,31 @@ phases:
   pre_test:
     commands:
       - cd $DEVICEFARM_TEST_PACKAGE_PATH
-      # node_modules já vem empacotado no test package (ZIP montado no CI) — NÃO roda npm install
-      # por device. Elimina o maior custo repetido do pre_test (download de deps + retries de
-      # ECONNRESET) e o `npm run wdio` roda direto.
+      # NUNCA declare "appium" no package.json. Isso derrubou o run-22 (2026-09-01).
+      # O Appium usado aqui é o do HOST (v2.11.5, runtime appium_2_x), que já vem com o driver
+      # pré-instalado no APPIUM_HOME padrão dele. Mas o Appium AUTODETECTA o APPIUM_HOME:
+      # se o package.json do diretório atual declarar "appium" como dependência, ele passa a
+      # usar ESSE diretório como APPIUM_HOME. Como a fase roda dentro de
+      # $DEVICEFARM_TEST_PACKAGE_PATH, declarar "appium" no package.json fez o log virar
+      #   The autodetected Appium home path: .../test-package-xxxx
+      #   No drivers have been installed in .../test-package-xxxx
+      # e toda criação de sessão falhou com "Could not find a driver for automationName
+      # 'UiAutomator2'/'XCUITest'". Zero teste executado, nenhum *-result.json gerado, o job
+      # publish-report caiu na guarda "Device Farm não retornou allure-results" e o relatório
+      # do GitHub Pages parou de ser atualizado.
+      # Só a DECLARAÇÃO no package.json importa — o appium içado para node_modules como
+      # dependência transitiva do appium-uiautomator2-driver não dispara a autodetecção.
+      # Os avisos npm EBADENGINE (host em Node 18) são inofensivos: o npm install conclui.
+      # Retry no npm install: o host do Device Farm às vezes derruba a conexão baixando
+      # pacotes (ECONNRESET) → sem deps o `npm run wdio` dá "wdio: command not found", o
+      # teste nem roda e o device some do relatório. Tenta até 3x; se esgotar, erra claro aqui.
+      - |
+        n=0
+        until npm install; do
+          n=$((n+1))
+          if [ $n -ge 3 ]; then echo "npm install falhou após 3 tentativas"; exit 1; fi
+          echo "npm install falhou (tentativa $n) — nova tentativa em 10s"; sleep 10
+        done
       - 'echo "CLIENT_USER=$CLIENT_USER" > .env'
       - 'echo "CLIENT_PASSWORD=$CLIENT_PASSWORD" >> .env'
       - 'echo "CLIENT_USERS_EMAILS=$CLIENT_USERS_EMAILS" >> .env'
@@ -36,12 +58,7 @@ phases:
   test:
     commands:
       - cd $DEVICEFARM_TEST_PACKAGE_PATH
-      # Chama o bin real do WDIO pelo caminho real, em vez de `npm run wdio` (que passa pelo
-      # symlink node_modules/.bin/wdio). O unzip do Device Farm NÃO restaura symlinks — materializa
-      # cada um como arquivo-texto com o caminho do alvo, então `.bin/wdio` quebra ("No such file
-      # or directory"). O wdio.js real faz `import('../build/index.js')` relativo à própria pasta
-      # (@wdio/cli/bin/ -> @wdio/cli/build/index.js), que existe, e não depende de symlink.
-      - node ./node_modules/@wdio/cli/bin/wdio.js run ./wdio.conf.ts
+      - npm run wdio
 
   post_test:
     commands:

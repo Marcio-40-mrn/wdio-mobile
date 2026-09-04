@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execSync } from 'child_process';
-import { createWriteStream, existsSync, mkdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'fs';
+import { createWriteStream, existsSync, mkdirSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'fs';
 import https from 'https';
 import http from 'http';
 import os from 'os';
@@ -33,6 +33,86 @@ const platformUpper = (() => {
     const idx = process.argv.indexOf('--platform');
     return idx !== -1 ? process.argv[idx + 1].toUpperCase() : 'ANDROID';
 })();
+
+// ── Seleção do build: profile e data vêm do ambiente (.env local / Repo Variables na esteira) ──
+// Ausentes => comportamento histórico: profile 'development' + build mais recente.
+// Vazio conta como ausente: `${{ vars.X }}` de uma variável não cadastrada vira string vazia.
+const envValue = (name) => {
+    const value = process.env[name]?.trim();
+    return value ? value : undefined;
+};
+// 'YYYY-MM-DD' é o placeholder do .env — vale como não preenchido
+const envDate = (name) => {
+    const value = envValue(name);
+    return (!value || /^y{4}-m{2}-d{2}$/i.test(value)) ? undefined : value;
+};
+
+// Android e iOS às vezes são publicados em profiles diferentes, daí uma variável por plataforma
+// (BUILD_PROFILE serve de fallback comum às duas).
+const BUILD_PROFILE = (platformUpper === 'IOS'
+    ? envValue('BUILD_PROFILE_IOS')
+    : envValue('BUILD_PROFILE_ANDROID'))
+    ?? envValue('BUILD_PROFILE')
+    ?? 'development';
+
+// latest -> build FINISHED mais recente do profile/bundle
+// date   -> mais recente dentro do intervalo BUILD_FROM..BUILD_TO (inclusivo nas duas pontas)
+const BUILD_SELECTION = (envValue('BUILD_SELECTION') ?? 'latest').toLowerCase();
+const BUILD_FROM = envDate('BUILD_FROM');
+const BUILD_TO   = envDate('BUILD_TO');
+
+if (!['latest', 'date'].includes(BUILD_SELECTION)) {
+    console.error(`BUILD_SELECTION inválido: '${BUILD_SELECTION}'. Use 'latest' ou 'date'.`);
+    process.exit(1);
+}
+
+// Converte 'YYYY-MM-DD' para timestamp local. endOfDay=true -> 23:59:59.999 do mesmo dia.
+function parseLocalDate(value, label, endOfDay) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+        console.error(`${label} inválido: '${value}'. Use o formato 'YYYY-MM-DD'.`);
+        process.exit(1);
+    }
+    const [year, month, day] = value.split('-').map(Number);
+    const date = endOfDay
+        ? new Date(year, month - 1, day, 23, 59, 59, 999)
+        : new Date(year, month - 1, day, 0, 0, 0, 0);
+    // Rejeita datas que "transbordam" (ex.: 2026-02-31 vira 03/03)
+    if (Number.isNaN(date.getTime()) || date.getMonth() !== month - 1 || date.getDate() !== day) {
+        console.error(`${label} não é uma data válida: '${value}'.`);
+        process.exit(1);
+    }
+    return date.getTime();
+}
+
+let rangeStart = -Infinity;
+let rangeEnd = Infinity;
+
+if (BUILD_SELECTION === 'date') {
+    if (!BUILD_FROM && !BUILD_TO) {
+        console.error("BUILD_SELECTION=date exige BUILD_FROM e/ou BUILD_TO preenchidos ('YYYY-MM-DD').");
+        process.exit(1);
+    }
+    if (BUILD_FROM) rangeStart = parseLocalDate(BUILD_FROM, 'BUILD_FROM', false);
+    if (BUILD_TO)   rangeEnd   = parseLocalDate(BUILD_TO,   'BUILD_TO',   true);
+    if (rangeStart > rangeEnd) {
+        console.error(`Intervalo inválido: BUILD_TO (${BUILD_TO}) é anterior a BUILD_FROM (${BUILD_FROM}).`);
+        process.exit(1);
+    }
+}
+
+const isInRange = (createdAt) => {
+    const ts = new Date(createdAt).getTime();
+    return ts >= rangeStart && ts <= rangeEnd;
+};
+
+// Descreve o intervalo configurado, para logs e mensagens de erro
+const rangeLabel = BUILD_SELECTION === 'date'
+    ? (BUILD_FROM && BUILD_TO
+        ? `entre ${BUILD_FROM} e ${BUILD_TO}`
+        : BUILD_FROM
+            ? `a partir de ${BUILD_FROM}`
+            : `até ${BUILD_TO}`)
+    : 'mais recente';
 
 function graphqlRequest(query, variables = {}) {
     return new Promise((resolve, reject) => {
@@ -102,7 +182,7 @@ const hasPlatform = buildsField.args?.some(a => a.name === 'platform');
 const hasStatus   = buildsField.args?.some(a => a.name === 'status');
 const hasOffset   = buildsField.args?.some(a => a.name === 'offset');
 
-console.log(`Caminho: app.${appByIdField.name}(${appIdArgName}: ...).${buildsField.name}(...) — buscando último development build (.apk ou .aab) para ${TARGET_BUNDLE_ID}...`);
+console.log(`Caminho: app.${appByIdField.name}(${appIdArgName}: ...).${buildsField.name}(...) — buscando build '${BUILD_PROFILE}' (${rangeLabel}, .apk ou .aab) para ${TARGET_BUNDLE_ID}...`);
 
 const buildsArgs = [
     hasLimit    ? 'limit: $limit'       : null,
@@ -152,15 +232,16 @@ const build = appBuilds
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
     .find(b =>
         b.status === 'FINISHED' &&
-        b.buildProfile === 'development' &&
+        b.buildProfile === BUILD_PROFILE &&
         b.appIdentifier === TARGET_BUNDLE_ID &&
+        isInRange(b.createdAt) &&
         (platformUpper === 'IOS'
             ? b.artifacts?.buildUrl?.endsWith('.ipa')
             : (b.artifacts?.buildUrl?.endsWith('.apk') || b.artifacts?.buildUrl?.endsWith('.aab')))
     );
 
 if (!build) {
-    console.error(`Nenhum build development/FINISHED com .apk ou .aab encontrado para ${TARGET_BUNDLE_ID}.`);
+    console.error(`Nenhum build '${BUILD_PROFILE}'/FINISHED com .apk ou .aab encontrado para ${TARGET_BUNDLE_ID} (${rangeLabel}).`);
     if (appBuilds.length) {
         console.error('Builds disponíveis (mais recentes primeiro):');
         [...appBuilds]
@@ -225,71 +306,19 @@ function download(url, dest) {
     });
 }
 
-// GET simples devolvendo { status, headers, body }. Os `headers` extras valem só para o host
-// da URL original: num redirect para outro host eles são descartados. Isso importa porque o
-// Authorization não pode vazar para fora da api.github.com — o endpoint de download do asset
-// (objects.githubusercontent.com) já vem assinado e rejeita requisição com token.
-function httpsGet(url, headers = {}) {
+function httpsGet(url) {
     return new Promise((resolve, reject) => {
-        const origin = new URL(url).host;
-        https.get(url, { headers: { 'User-Agent': 'install-apk-script', ...headers } }, (res) => {
+        https.get(url, { headers: { 'User-Agent': 'install-apk-script' } }, (res) => {
             if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
                 res.resume();
-                const next = new URL(res.headers.location, url);
-                httpsGet(next.href, next.host === origin ? headers : {}).then(resolve).catch(reject);
+                httpsGet(res.headers.location).then(resolve).catch(reject);
                 return;
             }
             let data = '';
             res.on('data', chunk => data += chunk);
-            res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: data }));
+            res.on('end', () => resolve(data));
         }).on('error', reject);
     });
-}
-
-// Versão usada quando a API do GitHub não responde. O nome do asset segue o padrão
-// bundletool-all-<versão>.jar em todos os releases.
-const BUNDLETOOL_FALLBACK_VERSION = '1.18.3';
-
-// Descobre a URL do bundletool mais recente pela API do GitHub.
-//
-// A API sem autenticação tem cota de 60 requisições/hora POR IP. Isso nunca aparece na
-// execução local, porque scripts/bundletool.jar fica cacheado e este bloco inteiro é pulado
-// pelo `if (!existsSync(...))`. No CI o jar nunca existe (é gitignored), então TODA run bate
-// na API — saindo por um IP de runner hospedado, compartilhado com muitos outros jobs, onde
-// os 60/h se esgotam com facilidade. Com GITHUB_TOKEN a cota vai para 5000/h.
-//
-// Se ainda assim a API falhar, cai numa URL fixa de release (que não passa pela API e não tem
-// rate limit) em vez de derrubar o pipeline.
-async function resolveBundletoolUrl() {
-    const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
-    try {
-        const res = await httpsGet('https://api.github.com/repos/google/bundletool/releases/latest', {
-            Accept: 'application/vnd.github+json',
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        });
-
-        if (res.status !== 200) {
-            const reset = res.headers['x-ratelimit-reset'];
-            throw new Error(
-                `HTTP ${res.status} (autenticado: ${token ? 'sim' : 'NÃO'}` +
-                `, cota ${res.headers['x-ratelimit-remaining'] ?? '?'}/${res.headers['x-ratelimit-limit'] ?? '?'}` +
-                `, reset ${reset ? new Date(Number(reset) * 1000).toISOString() : '?'}) — ` +
-                res.body.slice(0, 200)
-            );
-        }
-
-        const release = JSON.parse(res.body);
-        const jarAsset = release.assets?.find(a => a.name.endsWith('.jar'));
-        if (!jarAsset) throw new Error(`release ${release.tag_name ?? '?'} não tem asset .jar`);
-
-        console.log(`Baixando bundletool ${release.tag_name}...`);
-        return jarAsset.browser_download_url;
-    } catch (err) {
-        console.warn(`Não foi possível consultar a API do GitHub: ${err.message}`);
-        console.warn(`Usando fallback fixo: bundletool ${BUNDLETOOL_FALLBACK_VERSION} (download direto, sem API).`);
-        return `https://github.com/google/bundletool/releases/download/${BUNDLETOOL_FALLBACK_VERSION}` +
-            `/bundletool-all-${BUNDLETOOL_FALLBACK_VERSION}.jar`;
-    }
 }
 
 console.log(`Fazendo download do ${isIpa ? 'IPA' : isAab ? 'AAB' : 'APK'}...`);
@@ -320,15 +349,17 @@ if (isIpa) {
 
     const bundletoolJar = path.join(projectRoot, 'scripts', 'bundletool.jar');
     if (!existsSync(bundletoolJar)) {
-        console.log('bundletool.jar não encontrado em scripts/. Baixando...');
-        try {
-            await download(await resolveBundletoolUrl(), bundletoolJar);
-        } catch (err) {
-            console.error(`Falha ao baixar o bundletool.jar: ${err.message}`);
-            if (existsSync(bundletoolJar)) rmSync(bundletoolJar, { force: true });
+        console.log('bundletool.jar não encontrado em scripts/. Baixando versão mais recente...');
+        const releaseJson = await httpsGet('https://api.github.com/repos/google/bundletool/releases/latest');
+        const release = JSON.parse(releaseJson);
+        const jarAsset = release.assets?.find(a => a.name.endsWith('.jar'));
+        if (!jarAsset) {
+            console.error('Não foi possível encontrar o bundletool.jar no release do GitHub.');
             unlinkSync(tmpArtifact);
             process.exit(1);
         }
+        console.log(`Baixando bundletool ${release.tag_name}...`);
+        await download(jarAsset.browser_download_url, bundletoolJar);
         console.log('bundletool.jar salvo em scripts/bundletool.jar');
     }
 
@@ -354,11 +385,8 @@ if (isIpa) {
     const tmpApksDir = path.join(projectRoot, 'tmp-apks-dir');
 
     console.log('Convertendo AAB → APK universal com bundletool...');
-    // -Xmx4g: o heap padrão da JVM é ~1/4 da RAM. No runner do GitHub (2 vCPU / 7 GB em repo
-    // privado) isso dá ~1,75 GB, apertado para o universal APK atual (~150 MB) — localmente
-    // a máquina tem folga e o default basta.
     execSync(
-        `java -Xmx4g -jar "${bundletoolJar}" build-apks` +
+        `java -jar "${bundletoolJar}" build-apks` +
         ` --bundle="${tmpArtifact}"` +
         ` --output="${tmpApks}"` +
         ` --mode=universal` +
@@ -393,18 +421,3 @@ if (isIpa) {
     unlinkSync(tmpApks);
     console.log('APK salvo em: app.apk');
 }
-
-// Guarda final: o CI sobe este artefato para o Device Farm no passo seguinte. Se ele não
-// existir ou vier truncado, falhar aqui — nomeando o passo — é melhor do que quebrar depois
-// no `curl -T` com um erro que não diz nada sobre a origem.
-const artifactPath = path.join(projectRoot, isIpa ? 'app.ipa' : 'app.apk');
-if (!existsSync(artifactPath)) {
-    console.error(`Conversão/download terminou sem gerar ${path.basename(artifactPath)}.`);
-    process.exit(1);
-}
-const artifactMB = statSync(artifactPath).size / 1024 / 1024;
-if (artifactMB < 10) {
-    console.error(`${path.basename(artifactPath)} tem apenas ${artifactMB.toFixed(1)} MB — artefato truncado.`);
-    process.exit(1);
-}
-console.log(`Artefato pronto: ${path.basename(artifactPath)} (${artifactMB.toFixed(1)} MB)`);

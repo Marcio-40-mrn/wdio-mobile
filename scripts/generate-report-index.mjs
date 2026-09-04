@@ -25,6 +25,10 @@ if (!reportsDir) {
     process.exit(1);
 }
 
+// Quantas execuções o CI mantém publicadas. Definido em REPORTS_KEEP pelo job
+// publish-report, para que workflow e índice nunca divirjam.
+const keep = Number(process.env.REPORTS_KEEP) || 3;
+
 const absDir = path.resolve(reportsDir);
 const entries = fs.readdirSync(absDir, { withFileTypes: true })
     .filter(d => d.isDirectory() && /^run-\d+/.test(d.name))
@@ -88,7 +92,8 @@ const html = `<!DOCTYPE html>
   <h1>Aramis Mobile Tests — Relatórios Allure</h1>
   <p>Todas as execuções de teste estão listadas abaixo, da mais recente para a mais antiga.
      Os relatórios são gerados automaticamente após cada run no CI.
-     A exclusão é apenas manual — a lista abaixo reflete sempre os relatórios que ainda existem.</p>
+     Só as ${keep} execuções mais recentes ficam publicadas: a cada run no CI a mais antiga é removida,
+     para não estourar o limite de espaço do repositório.</p>
   ${entries.length === 0
     ? '<p class="empty">Nenhum relatório ainda. Execute o workflow para gerar o primeiro relatório.</p>'
     : `<table id="tbl">

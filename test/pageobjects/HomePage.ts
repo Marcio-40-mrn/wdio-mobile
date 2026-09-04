@@ -1,6 +1,11 @@
 import { BasePage, timewhait } from "./BasePage";
 import { driver, $ } from '@wdio/globals'
 
+const SELETORES_PERFIL = [
+    "accessibility id:Menu",    // versão com ícone de mochila
+    "accessibility id:Perfil",  // versão com ícone de sacola/perfil
+];
+
 export class HomePage extends BasePage {
 
     async ativarApp() {
@@ -19,10 +24,7 @@ export class HomePage extends BasePage {
     }
 
     async abrirPerfil() {
-        const element = await $("accessibility id:Menu");
-        await this.waitForElement(element);
-        await element.click();
-        await driver.pause(timewhait);
+        await this.clickFirstPresent(SELETORES_PERFIL);
     }
 
     async abrirCategorias() {

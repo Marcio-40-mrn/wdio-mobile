@@ -37,6 +37,13 @@ CLIENT_PASSWORD=<senha>
 EXPO_TOKEN=<token em expo.dev → Account Settings → Access Tokens>
 EXPO_PROJECT_ID=<UUID em expo.dev → projeto → Project Settings>
 
+# Seleção do build no EAS (opcionais — ver tabela abaixo)
+BUILD_PROFILE_ANDROID=development
+BUILD_PROFILE_IOS=development
+BUILD_SELECTION=latest
+BUILD_FROM=YYYY-MM-DD
+BUILD_TO=YYYY-MM-DD
+
 # iOS local via Device Farm Remote Access (apenas para npm run wdio:ios)
 REMOTE_HOST=<hostname da sessão remota>
 REMOTE_PORT=<porta, ex: 4723>
@@ -44,6 +51,28 @@ REMOTE_PATH_IOS=<Remote Path do Appium Inspector, ex: /wd/hub>
 ```
 
 > `REMOTE_HOST`, `REMOTE_PORT` e `REMOTE_PATH_IOS` só são usados quando `PLATFORM=ios` está ativo. Não afetam execuções Android.
+
+### Qual build do EAS é baixado
+
+Todas as variáveis abaixo são **opcionais**. Sem nenhuma delas o comportamento é o histórico:
+profile `development` e o build **FINISHED mais recente**.
+
+| Variável | Valores | Default | Efeito |
+|---|---|---|---|
+| `BUILD_PROFILE_ANDROID` | nome do profile no `eas.json` (`development`, `preview`, `production`…) | `development` | Profile usado nas execuções Android |
+| `BUILD_PROFILE_IOS` | idem | `development` | Profile usado com `--platform ios` (Android e iOS podem estar em profiles diferentes) |
+| `BUILD_PROFILE` | idem | — | Fallback comum às duas plataformas, quando a variável específica não está definida |
+| `BUILD_SELECTION` | `latest` ou `date` | `latest` | `latest`: build mais recente. `date`: mais recente dentro do intervalo |
+| `BUILD_FROM` | `YYYY-MM-DD` | — | Início do intervalo (inclusivo). Só vale com `BUILD_SELECTION=date` |
+| `BUILD_TO` | `YYYY-MM-DD` | — | Fim do intervalo (inclusivo, até 23:59:59 do dia) |
+
+O literal `YYYY-MM-DD` (e valores vazios) conta como **não preenchido** — dá para deixar o
+placeholder no `.env` sem afetar o modo `latest`. Com `BUILD_SELECTION=date` é obrigatório
+preencher `BUILD_FROM` e/ou `BUILD_TO`; para um dia único, use a mesma data nos dois.
+
+> **Limitação do modo `date`:** a consulta ao EAS traz os **20 builds mais recentes** da
+> plataforma. Se o intervalo for antigo demais para caber nesses 20, o script encerra com erro
+> e lista os builds que encontrou, para você ajustar as datas.
 
 ---
 
@@ -112,6 +141,12 @@ O workflow `.github/workflows/mobile_test.yml` executa dois jobs em paralelo a c
 | `EXPO_TOKEN` | Token EAS para download de builds |
 | `EXPO_PROJECT_ID` | UUID do projeto ecomm no EAS (expo.dev → projeto → Project Settings → Project ID) |
 
+Além dos secrets, a esteira lê as variáveis de seleção de build como **Repo Variables**
+(Settings → Secrets and variables → Actions → aba **Variables**, não são secrets):
+`BUILD_PROFILE_ANDROID`, `BUILD_PROFILE_IOS`, `BUILD_SELECTION`, `BUILD_FROM` e `BUILD_TO`.
+Todas opcionais — variável não cadastrada chega vazia ao script e cai no default
+(`development` + build mais recente), então a esteira roda igual sem nenhuma configuração nova.
+
 ### Conta distinta por device (multiusuário no Device Farm)
 
 No Device Farm o pool roda vários devices em paralelo. Se todos logarem com a mesma
@@ -146,6 +181,22 @@ de emails. **A ordem dos emails define o índice da conta e precisa casar com `d
 
 ---
 
+## Planejamento e roadmap
+
+O planejamento do projeto fica em [`.planning/`](.planning/), no padrão GSD, como memória
+persistente entre sessões:
+
+- **[`ROADMAP.md`](.planning/ROADMAP.md)** — os marcos. O próximo é **replicar a suíte no
+  iOS**, usando uma sessão de Remote Access do AWS Device Farm num device iPhone para
+  levantar os elementos de cada tela e rodar exatamente o mesmo fluxo que roda hoje no
+  Android.
+- **[`STATE.md`](.planning/STATE.md)** — onde o projeto está agora e o que está pendente.
+- **[`REQUIREMENTS.md`](.planning/REQUIREMENTS.md)** — o fluxo coberto e as regras que não
+  podem ser quebradas.
+- **[`PROJECT.md`](.planning/PROJECT.md)** — stack e os quatro ambientes de execução.
+
+---
+
 ## Arquitetura
 
 ```
@@ -164,6 +215,14 @@ test/
 scripts/
   install-apk.mjs     — download + install do APK/AAB do EAS via GraphQL API
   generate-report-index.mjs — gera índice HTML do branch reports
+.planning/            — memória persistente do projeto (padrão GSD)
+  PROJECT.md          — stack e ambientes de execução
+  REQUIREMENTS.md     — fluxo coberto, critérios de aceite e regras invioláveis
+  ROADMAP.md          — marcos: o que está feito e o que vem a seguir
+  STATE.md            — estado atual e pendências abertas
+  plans/              — um arquivo por iniciativa
+.claude/agents/       — sub-agents especializados
+  android-ui-inspector.md — inspeção de elementos Android via adb
 ```
 
 ### Flags de detecção de ambiente (`wdio.conf.ts`)
@@ -174,3 +233,6 @@ scripts/
 | `isIOS` | `PLATFORM=ios` | Target iOS — setado por `wdio:ios` ou `testspec-ios.yml` |
 | `isRemote` | `isIOS && REMOTE_HOST` | iOS local via Device Farm Remote Access |
 | `isCI` | `CI` | GitHub Actions |
+
+---
+
