@@ -13,7 +13,6 @@ TypeScript com WebdriverIO + Appium.
 | Relatórios | Allure (`@wdio/allure-reporter`) + CTRF (`wdio-ctrf-json-reporter`) |
 | Distribuição do app | EAS / Expo, baixado por `scripts/install-apk.mjs` |
 | CI | GitHub Actions + AWS Device Farm |
-| Catálogo | Backstage (`catalog-info.yml`, TechDocs via `mkdocs.yml` + `docs/`) |
 
 ## Ambientes de execução
 
@@ -47,5 +46,4 @@ test/
 scripts/               download/instalação do app e geração do índice de relatórios
 .claude/agents/        sub-agents especializados
 .planning/             memória persistente do projeto (este diretório)
-docs/                  TechDocs publicado no Backstage
 ```
