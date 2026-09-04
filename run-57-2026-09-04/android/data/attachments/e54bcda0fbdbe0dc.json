@@ -1,0 +1,4 @@
+{
+  "using": "-android uiautomator",
+  "value": "new UiSelector().className(\"com.horcrux.svg.PathView\").instance(2)"
+}

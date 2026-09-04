@@ -1,0 +1,1 @@
+unknown method: WebDriverError: This extension is only supported on simulators. The only known way to clear app data on real devices would be to uninstall the app then perform a fresh install of it. when running "execute/sync" with method "POST" and args "mobile: clearApp"

@@ -1,0 +1,1 @@
+[{"values":["iOS"],"name":"Platform"},{"values":["00008110-0008056A2205801E"],"name":"Device"},{"values":["com.aramis.ecomm"],"name":"App"},{"values":["1.10.1"],"name":"AppVersion"},{"values":["285"],"name":"AppBuildVersion"},{"values":["XCUITest"],"name":"Automation"},{"values":["WebdriverIO + Appium"],"name":"Framework"},{"values":["AWS Device Farm"],"name":"Environment"}]

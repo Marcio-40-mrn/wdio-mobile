@@ -1,0 +1,1 @@
+[{"values":["Android"],"name":"Platform"},{"values":["RFGL126SB4F"],"name":"Device"},{"values":["com.aramis.ecomm"],"name":"App"},{"values":["1.10.1"],"name":"AppVersion"},{"values":["431"],"name":"AppBuildVersion"},{"values":["UiAutomator2"],"name":"Automation"},{"values":["WebdriverIO + Appium"],"name":"Framework"},{"values":["AWS Device Farm"],"name":"Environment"}]

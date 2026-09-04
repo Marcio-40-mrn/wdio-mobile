@@ -1,0 +1,4 @@
+{
+  "using": "-android uiautomator",
+  "value": "new UiSelector().descriptionMatches(\"Camisa.{10,}\").instance(0)"
+}

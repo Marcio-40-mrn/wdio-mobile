@@ -1,0 +1,10 @@
+{
+  "script": "<script> [37 bytes]",
+  "args": [
+    {
+      "resolution": "1280x720",
+      "maxDurationSec": 600,
+      "priority": "high"
+    }
+  ]
+}
